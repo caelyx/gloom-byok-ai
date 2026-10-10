@@ -45,6 +45,23 @@ export type PiRuntimeErrorCode =
   | "request_failed"
   | "cancelled";
 
+/**
+ * The effort a request runs at when the caller asks for none. Claude models
+ * with adaptive thinking take an effort level, and Pi would otherwise send
+ * "high" to the newest of them; medium is Gloomberb's default. Claude models
+ * with budget-based thinking are left alone, since a level there turns
+ * thinking on rather than setting an effort.
+ */
+export function defaultReasoning(model: Model<Api>): ThinkingLevel | undefined {
+  return isAnthropicMessagesModel(model) && model.compat?.forceAdaptiveThinking === true
+    ? "medium"
+    : undefined;
+}
+
+function isAnthropicMessagesModel(model: Model<Api>): model is Model<"anthropic-messages"> {
+  return model.api === "anthropic-messages";
+}
+
 export class PiRuntimeError extends Error {
   readonly code: PiRuntimeErrorCode;
 
@@ -533,7 +550,7 @@ export class PiAiRuntime {
           tools: request.tools,
         };
         const stream = this.models.streamSimple(model, context, {
-          reasoning: request.reasoning,
+          reasoning: request.reasoning ?? defaultReasoning(model),
           sessionId: request.sessionId,
           signal: controller.signal,
         });
@@ -592,7 +609,7 @@ export class PiAiRuntime {
       initialState: {
         systemPrompt: request.systemPrompt ?? "",
         model,
-        thinkingLevel: request.thinkingLevel ?? "off",
+        thinkingLevel: request.thinkingLevel ?? defaultReasoning(model) ?? "off",
         messages: [
           ...toPiMessages(request.messages, model),
           ...toPiAgentMessages(request.agentMessages, model),

@@ -52,7 +52,7 @@ const PROVIDER_DEFINITIONS: readonly AiProviderDefinition[] = [
     id: "anthropic",
     name: "Claude",
     outputModes: ALL_OUTPUT_MODES,
-    preferredModelIds: ["claude-opus-5-5", "claude-sonnet-5-5"],
+    preferredModelIds: ["claude-sonnet-5-5", "claude-sonnet-5"],
   },
   {
     id: "openai-codex",

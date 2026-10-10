@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   AI_PROVIDER_IDS,
   getAiProvider,
+  getAiProviderDefinition,
   getAiProviderDefinitions,
   migrateLegacyAiProviderId,
   setDetectedProviders,
@@ -45,6 +46,10 @@ describe("Pi provider catalog", () => {
       expect(definition).not.toHaveProperty("command");
       expect(definition).not.toHaveProperty("buildArgs");
     }
+  });
+
+  test("defaults Claude to the latest Sonnet", () => {
+    expect(getAiProviderDefinition("anthropic")?.preferredModelIds[0]).toBe("claude-sonnet-5-5");
   });
 
   test("uses legacy ids only to migrate persisted selections", () => {

@@ -24,7 +24,7 @@ function createHostFixture(sendRemoteRequest?: (
 ) => Promise<RemoteControlResponse>) {
   const faux = fauxProvider({
     provider: "anthropic",
-    models: [{ id: "claude-opus-5-5", name: "Opus" }],
+    models: [{ id: "claude-sonnet-5-5", name: "Opus" }],
   });
   const models = createModels({ credentials: new InMemoryCredentialStore() });
   models.setProvider(faux.provider);
@@ -248,7 +248,7 @@ describe("Pi AI host catalog and account connection", () => {
       id: "anthropic",
       label: "Claude",
       name: "Anthropic",
-      defaultModelId: "claude-opus-5-5",
+      defaultModelId: "claude-sonnet-5-5",
       authMethods: [
         { type: "oauth", label: "Anthropic (Claude Pro/Max)", canLogin: true },
         { type: "api_key", label: "Anthropic API key", canLogin: true },
