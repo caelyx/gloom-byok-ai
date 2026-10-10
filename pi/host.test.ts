@@ -286,6 +286,85 @@ describe("Pi AI host catalog and account connection", () => {
     expect(JSON.stringify(catalog)).not.toContain("sk-ant-api03");
   });
 
+  test("refuses to save a key while an AI Agent reply could drive the app", async () => {
+    const saved: string[] = [];
+    let finishRun: () => void = () => {};
+    const connected: PiProviderSummary = {
+      ...disconnectedSummary("anthropic", "Claude"),
+      connection: { state: "connected", type: "oauth", origin: "stored", disconnectable: true },
+    };
+    const runtime = {
+      getProviderSummary: async () => connected,
+      getCatalog: async () => ({ providers: [connected], refreshErrors: {} }),
+      runAgent: () => ({
+        done: new Promise((resolve) => {
+          finishRun = () => resolve({ text: "done", messages: [] });
+        }),
+        cancel() {},
+      }),
+      saveApiKey: async (providerId: string) => {
+        saved.push(providerId);
+        return connected;
+      },
+    };
+    const host = createPiAiHost({
+      appKind: "tui",
+      dataDir: "/tmp/gloomberb-pi-host-agent-guard-test",
+      runtime: runtime as never,
+    });
+
+    const run = host.run({ providerId: "anthropic", prompt: "Drive the app", outputMode: "structured" });
+    // The run starts after the provider check settles.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(host.saveApiKey!("anthropic", "sk-ant-attacker"))
+      .rejects.toThrow("Wait for the AI Agent reply to finish or cancel it");
+    expect(saved).toEqual([]);
+
+    finishRun();
+    await run.done;
+    await host.saveApiKey!("anthropic", "sk-ant-user");
+    expect(saved).toEqual(["anthropic"]);
+  });
+
+  test("refuses to save a key while that provider's browser sign-in is pending", async () => {
+    const providerSummary = disconnectedSummary("xai", "xAI / Grok");
+    const saved: string[] = [];
+    const runtime = {
+      getProviderSummary: async () => providerSummary,
+      getCatalog: async () => ({ providers: [providerSummary], refreshErrors: {} }),
+      login: () => new Promise(() => {}),
+      saveApiKey: async (providerId: string) => {
+        saved.push(providerId);
+        return providerSummary;
+      },
+    };
+    const host = createPiAiHost({
+      appKind: "tui",
+      dataDir: "/tmp/gloomberb-pi-host-pending-login-test",
+      openExternal: async () => {},
+      runtime: runtime as never,
+    });
+
+    void host.connect!("xai");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(host.saveApiKey!("xai", "xai-key"))
+      .rejects.toThrow("browser sign-in is still in progress");
+    expect(saved).toEqual([]);
+  });
+
+  test("reports which kind of credential is connected", () => {
+    const catalog = toAiRuntimeCatalog({
+      providers: [{
+        ...disconnectedSummary("anthropic", "Claude"),
+        connection: { state: "connected", type: "oauth", origin: "stored", disconnectable: true },
+      }],
+      refreshErrors: {},
+    });
+
+    expect(catalog.accounts[0]).toMatchObject({ credentialType: "oauth" });
+  });
+
   test("keeps a disconnected provider visible and fails runs clearly without a CLI fallback", async () => {
     const providerSummary = disconnectedSummary("anthropic", "Claude");
     const runtime = {

@@ -132,9 +132,10 @@ export function createAiRunnerCapability(
         if (!aiHost.disconnect) throw new Error("In-app AI account disconnection is unavailable.");
         return aiHost.disconnect(providerId);
       }, "action"),
-      // A stream on purpose: remote control (which the AI Agent drives) and
-      // `gloomberb api` reach capabilities through invoke only, so a model
-      // cannot swap the user's credential for one it controls.
+      // A stream on purpose: remote control, which the AI Agent drives, calls
+      // capabilities through invoke only. The agent can still reach the
+      // masked command by driving the UI, which the Pi host refuses while a
+      // reply is running.
       saveProviderApiKey: stream(async (input: any, emit) => {
         const aiHost = await getHost();
         const providerId = await requireCatalogProvider(input.providerId);

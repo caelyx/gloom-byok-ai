@@ -83,7 +83,7 @@ function providerLabel(providerId: string): string {
 
 function providerPrerequisite(provider: AiProvider): string {
   if (isAiProviderReady(provider)) return `${provider.name} is ready.`;
-  return `${provider.name} is not connected. Open settings to sign in or configure access.`;
+  return `${provider.name} is not connected. Open settings to sign in or enter an API key.`;
 }
 
 function WorkspaceProviderChooser({

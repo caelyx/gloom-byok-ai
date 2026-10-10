@@ -41,8 +41,8 @@ describe("AI runner capability API-key entry", () => {
     });
     const operation = capability.operations.saveProviderApiKey!;
 
-    // Remote control and `gloomberb api` reach capabilities through invoke,
-    // so an agent with the remote tool must not find a handler here.
+    // Remote control reaches capabilities through invoke only, so an agent
+    // with the remote tool must not find a handler here.
     expect(operation).toMatchObject({ kind: "stream", rendererSafe: true });
     expect(operation.handler).toBeUndefined();
     expect(await save(capability, { providerId: "google", apiKey: "AIza-secret" })).toEqual(catalog);

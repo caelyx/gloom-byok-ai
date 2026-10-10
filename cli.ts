@@ -64,7 +64,7 @@ function connectionFailure(provider: PiCatalog["providers"][number]): string {
   if (provider.connection.state === "error") {
     return `${provider.label} could not connect: ${provider.connection.message}`;
   }
-  return `${provider.label} is not connected. Connect it from AI pane settings first.`;
+  return `${provider.label} is not connected. Sign in or enter an API key in AI pane settings, or set its API-key environment variable.`;
 }
 
 export function createAiCliCommand(options: CreateAiCliCommandOptions = {}): CliCommandDef {

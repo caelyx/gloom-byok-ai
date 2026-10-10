@@ -442,8 +442,8 @@ export class PiAiRuntime {
 
   /**
    * Stores an API key the user typed, through the provider's own API-key login
-   * so Pi decides the credential shape. It replaces any stored sign-in for the
-   * provider, and like `login` only non-secret status comes back.
+   * so Pi decides the credential shape. It replaces any credential saved for
+   * the provider, and like `login` only non-secret status comes back.
    */
   async saveApiKey(providerId: AiProviderId, apiKey: string): Promise<PiProviderSummary> {
     if (!this.models.getProvider(providerId)) {

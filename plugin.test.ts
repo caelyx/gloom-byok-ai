@@ -154,7 +154,11 @@ describe("AI plugin API-key entry", () => {
     expect(settings?.fields.find((field) => field.key === "account:google")).toBeUndefined();
     const keyField = settings?.fields.find((field) => field.key === "account:google:api-key");
     if (keyField?.type !== "action") throw new Error("Expected a Gemini API-key action");
-    expect(keyField).toMatchObject({ label: "Google Gemini API key", actionLabel: "Enter key" });
+    expect(keyField).toMatchObject({
+      label: "Gemini API key",
+      actionLabel: "Enter key",
+      description: "Create one in Google AI Studio.",
+    });
 
     const opened: Array<string | undefined> = [];
     let closed = false;
@@ -167,7 +171,7 @@ describe("AI plugin API-key entry", () => {
     } as any);
 
     expect(closed).toBe(true);
-    expect(opened).toEqual(["Set Google Gemini API key"]);
+    expect(opened).toEqual(["Set Gemini API key"]);
   });
 
   test("offers Claude an API key alongside the subscription sign-in", () => {
@@ -192,6 +196,63 @@ describe("AI plugin API-key entry", () => {
     expect(label("openai")).toBe("Set OpenAI API key");
     expect(label("github-copilot")).toBe("Set GitHub Copilot token");
     expect(label("anthropic")).toBe("Set Claude API key");
+    expect(label("xai")).toBe("Set xAI API key");
+  });
+
+  test("shows the whole wizard explanation in its one visible body line", () => {
+    setAiRuntimeCatalog(catalog([]));
+    const { commands } = setupPlugin();
+    const step = commands.find((command) => command.id === "ai-api-key:anthropic")?.wizard?.[0];
+
+    // The command bar shows only the first body line of a non-info step.
+    expect(step?.body).toEqual([
+      "Create one in the Claude Console. Usage is billed to that API account, not to a Claude subscription. "
+        + "Saved in Gloomberb's data directory, replacing any credential saved there for this provider.",
+    ]);
+  });
+
+  test("labels the key row by whether a saved key already exists", () => {
+    const connected = catalog(["anthropic", "google"]);
+    connected.accounts = connected.accounts.map((account) => {
+      if (account.providerId === "anthropic") {
+        return { ...account, credentialType: "oauth" as const, connectionLabel: "Connected with OAuth" };
+      }
+      if (account.providerId === "google") {
+        return {
+          ...account,
+          credentialType: "api_key" as const,
+          credentialOrigin: "stored" as const,
+          connectionLabel: "Connected with an API key saved in Gloomberb",
+        };
+      }
+      return account;
+    });
+    setAiRuntimeCatalog(connected);
+    const { settings } = workspaceSettings(setupPlugin());
+
+    expect(settings?.fields.find((field) => field.key === "account:anthropic:api-key")).toMatchObject({
+      actionLabel: "Enter key",
+      description: "Takes precedence over the current connection (Connected with OAuth).",
+    });
+    expect(settings?.fields.find((field) => field.key === "account:google:api-key")).toMatchObject({
+      actionLabel: "Replace key",
+      description: "Connected with an API key saved in Gloomberb",
+    });
+  });
+
+  test("leaves a failed save in the wizard without announcing success", async () => {
+    setAiRuntimeCatalog(catalog([]));
+    setAiRunHost({
+      run: () => ({ done: Promise.resolve("unused"), cancel() {} }),
+      saveApiKey: async () => {
+        throw new Error("Wait for the AI Agent reply to finish or cancel it, then enter the key.");
+      },
+    });
+    const setup = setupPlugin();
+    const command = setup.commands.find((candidate) => candidate.id === "ai-api-key:google");
+
+    await expect(command!.execute({ apiKey: "AIza-secret" })).rejects.toThrow("Wait for the AI Agent reply");
+    expect(setup.notifications).toEqual([]);
   });
 
   test("keeps a sign-in error visible instead of the sign-in hint", () => {
@@ -220,14 +281,16 @@ describe("AI plugin API-key entry", () => {
     const command = setup.commands.find((candidate) => candidate.id === "ai-api-key:google");
     if (!command) throw new Error("Expected a Gemini API-key command");
 
-    expect(command.label).toBe("Set Google Gemini API key");
+    expect(command.label).toBe("Set Gemini API key");
     expect(command.hidden?.()).toBe(false);
     expect(command.wizard).toEqual([expect.objectContaining({
       key: "apiKey",
       type: "password",
     })]);
-    expect(setup.commands.find((candidate) => candidate.id === "ai-api-key:openai-codex")?.hidden?.())
-      .toBe(true);
+    expect(setup.commands.find((candidate) => candidate.id === "ai-api-key:openai-codex")).toBeUndefined();
+    setAiRuntimeCatalog({ providers: [], accounts: [], models: [] });
+    expect(command.hidden?.()).toBe(true);
+    setAiRuntimeCatalog(catalog([]));
 
     await command.execute({ apiKey: "AIza-secret" });
 
@@ -235,7 +298,7 @@ describe("AI plugin API-key entry", () => {
     expect(getAiRuntimeCatalog().accounts.find((account) => account.providerId === "google"))
       .toMatchObject({ connectionState: "connected" });
     expect(setup.notifications.at(-1)).toEqual({
-      body: "Google Gemini API key saved. It is checked on the first request.",
+      body: "Gemini API key saved. It is checked on the first request.",
       type: "success",
     });
     expect(JSON.stringify(setup.notifications)).not.toContain("AIza-secret");

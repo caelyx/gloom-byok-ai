@@ -152,4 +152,36 @@ describe("shared AI pane settings", () => {
     expect(resolveAiSharedDefaults(undefined, "claude"))
       .toEqual({ providerId: "anthropic", modelId: null });
   });
+
+  test("keys a provider's second account row by its variant", () => {
+    const action = () => {};
+    const settings = buildAiPaneSettingsDef({
+      title: "AI",
+      providers: [{ id: "anthropic", label: "Claude" }],
+      models: [],
+      defaultProviderId: "anthropic",
+      defaultModelId: null,
+      accountRows: [
+        { providerId: "anthropic", providerLabel: "Claude", description: "Sign in", actionLabel: "Connect", action },
+        {
+          providerId: "anthropic",
+          providerLabel: "Claude",
+          variant: "api-key",
+          label: "Claude API key",
+          description: "Paste a key",
+          actionLabel: "Enter key",
+          action,
+        },
+      ],
+    });
+
+    expect(settings.fields.filter((field) => field.type === "action").map((field) => ({
+      key: field.key,
+      label: field.label,
+      actionId: field.type === "action" ? field.actionId : null,
+    }))).toEqual([
+      { key: "account:anthropic", label: "Claude account", actionId: "ai:account:anthropic" },
+      { key: "account:anthropic:api-key", label: "Claude API key", actionId: "ai:account:anthropic:api-key" },
+    ]);
+  });
 });

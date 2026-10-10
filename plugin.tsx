@@ -115,55 +115,6 @@ function settingsModels(providerIds: ReadonlySet<string>) {
     }));
 }
 
-/** Where each provider issues the key, where that is worth saying. */
-const API_KEY_HINTS: Partial<Record<AiProviderId, string>> = {
-  anthropic: "Create one in the Claude Console. Usage is billed to that API account, not to a Claude subscription.",
-  google: "Create one in Google AI Studio.",
-};
-
-function apiKeyCommandId(providerId: string): string {
-  return `ai-api-key:${providerId}`;
-}
-
-/** What the provider calls the secret: Copilot takes a GitHub token. */
-function apiKeyNoun(providerId: AiProviderId, providerLabel: string): string {
-  if (providerId === "github-copilot") return `${providerLabel} token`;
-  return `${providerLabel.replace(/ API$/, "")} API key`;
-}
-
-function apiKeyCommandLabel(providerId: AiProviderId, providerLabel: string): string {
-  return `Set ${apiKeyNoun(providerId, providerLabel)}`;
-}
-
-function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
-  const connected = account.connectionState === "connected";
-  return {
-    providerId: account.providerId,
-    providerLabel: account.providerLabel,
-    variant: "api-key",
-    label: apiKeyNoun(account.providerId, account.providerLabel),
-    description: connected
-      ? `Replaces the current connection (${account.connectionLabel}).`
-      : API_KEY_HINTS[account.providerId] ?? `Paste an API key for ${account.providerLabel}.`,
-    actionLabel: connected ? "Replace key" : "Enter key",
-    action(context) {
-      // Pane settings have no masked field, so the key goes into the command
-      // bar's password step instead. The query lands on that command.
-      context.close();
-      context.openCommandBar(apiKeyCommandLabel(account.providerId, account.providerLabel));
-    },
-  };
-}
-
-function accountSettingRows(providerIds: ReadonlySet<string>): AiAccountSettingRow[] {
-  return getAiRuntimeCatalog().accounts
-    .filter((account) => providerIds.has(account.providerId))
-    .flatMap((account) => [
-      ...(account.canLogin || account.canDisconnect ? [signInSettingRow(account)] : []),
-      ...(account.canSetApiKey ? [apiKeySettingRow(account)] : []),
-    ]);
-}
-
 function signInSettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
   const disconnectable = account.canDisconnect;
   const oauthLabel = account.authMethods.find((method) => method.type === "oauth")?.label;
@@ -231,6 +182,116 @@ function signInSettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
       }
     },
   };
+}
+
+function accountSettingRows(providerIds: ReadonlySet<string>): AiAccountSettingRow[] {
+  return getAiRuntimeCatalog().accounts
+    .filter((account) => providerIds.has(account.providerId))
+    .flatMap((account) => [
+      ...(account.canLogin || account.canDisconnect ? [signInSettingRow(account)] : []),
+      ...(account.canSetApiKey ? [apiKeySettingRow(account)] : []),
+    ]);
+}
+
+/**
+ * What each provider calls its key and where it is issued. Static because the
+ * commands are registered before the runtime catalog has loaded. ChatGPT is
+ * absent: Pi signs it in through the browser only.
+ */
+const API_KEY_COPY: Readonly<Partial<Record<AiProviderId, { noun: string; hint: string }>>> = {
+  anthropic: {
+    noun: "Claude API key",
+    hint: "Create one in the Claude Console. Usage is billed to that API account, not to a Claude subscription.",
+  },
+  openai: { noun: "OpenAI API key", hint: "Create one in the OpenAI Platform dashboard." },
+  google: { noun: "Gemini API key", hint: "Create one in Google AI Studio." },
+  "github-copilot": {
+    noun: "GitHub Copilot token",
+    hint: "Use a GitHub token with Copilot access, the one Pi reads from COPILOT_GITHUB_TOKEN.",
+  },
+  xai: { noun: "xAI API key", hint: "Create one in the xAI Console." },
+  openrouter: { noun: "OpenRouter API key", hint: "Create one on OpenRouter's Keys page." },
+};
+
+function apiKeyCopy(account: AiRuntimeAccount): { noun: string; hint: string } {
+  return API_KEY_COPY[account.providerId] ?? {
+    noun: `${account.providerLabel} API key`,
+    hint: `Paste an API key for ${account.providerLabel}.`,
+  };
+}
+
+function apiKeyCommandLabel(noun: string): string {
+  return `Set ${noun}`;
+}
+
+function hasSavedApiKey(account: AiRuntimeAccount): boolean {
+  return account.connectionState === "connected"
+    && account.credentialType === "api_key"
+    && account.credentialOrigin === "stored";
+}
+
+function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
+  const saved = hasSavedApiKey(account);
+  const copy = apiKeyCopy(account);
+  return {
+    providerId: account.providerId,
+    providerLabel: account.providerLabel,
+    variant: "api-key",
+    label: copy.noun,
+    description: saved
+      ? account.connectionLabel
+      : account.connectionState === "connected"
+        // A saved key wins over a sign-in or an environment variable.
+        ? `Takes precedence over the current connection (${account.connectionLabel}).`
+        : copy.hint,
+    actionLabel: saved ? "Replace key" : "Enter key",
+    action(context) {
+      // Pane settings have no masked field, so the key goes into the command
+      // bar's password step instead. The query lands on that command.
+      context.close();
+      context.openCommandBar(apiKeyCommandLabel(copy.noun));
+    },
+  };
+}
+
+/**
+ * One masked-entry command per provider, reachable from its settings row or
+ * typed into the command bar, and hidden where Pi takes no key.
+ */
+function registerApiKeyCommands(ctx: GloomPluginContext): void {
+  for (const definition of getAiProviderDefinitions()) {
+    const copy = API_KEY_COPY[definition.id];
+    if (!copy) continue;
+    ctx.registerCommand({
+      id: `ai-api-key:${definition.id}`,
+      label: apiKeyCommandLabel(copy.noun),
+      keywords: ["ai", "api key", "key", "token", "connect", definition.id, definition.name.toLowerCase()],
+      category: "config",
+      description: `Connect ${definition.name} with an API key instead of a browser sign-in.`,
+      hidden: () => !getAiRuntimeCatalogSnapshot().accounts.some((account) => (
+        account.providerId === definition.id && account.canSetApiKey
+      )),
+      wizard: [{
+        key: "apiKey",
+        label: copy.noun,
+        type: "password",
+        placeholder: "Paste the key",
+        // The command bar shows only the first body line of an input step.
+        body: [`${copy.hint} Saved in Gloomberb's data directory, replacing any credential saved there for this provider.`],
+      }],
+      async execute(values) {
+        await ensureAiRunHost();
+        // Errors surface in the wizard; Pi's messages never contain the key.
+        await saveAiRuntimeApiKey(definition.id, values?.apiKey ?? "");
+        // Pi stores the key without calling the provider, so a typo only
+        // shows up when a request is made.
+        ctx.notify({
+          body: `${copy.noun} saved. It is checked on the first request.`,
+          type: "success",
+        });
+      },
+    });
+  }
 }
 
 function defaultsFromConfig(
@@ -341,40 +402,7 @@ export function createByokAiPlugin({ setupRunHost, cliCommands }: ByokAiPluginOp
       disposeRuntimeCatalog?.();
       disposeRuntimeCatalog = subscribeAiRuntimeCatalog(() => updateWizards(ctx.getConfig()));
 
-      for (const definition of getAiProviderDefinitions()) {
-        const account = () => getAiRuntimeCatalogSnapshot().accounts.find((candidate) => (
-          candidate.providerId === definition.id
-        ));
-        ctx.registerCommand({
-          id: apiKeyCommandId(definition.id),
-          label: apiKeyCommandLabel(definition.id, definition.name),
-          keywords: ["ai", "api key", "key", "connect", definition.id, definition.name.toLowerCase()],
-          category: "config",
-          description: `Connect ${definition.name} with an API key instead of a browser sign-in.`,
-          hidden: () => !account()?.canSetApiKey,
-          wizard: [{
-            key: "apiKey",
-            label: apiKeyNoun(definition.id, definition.name),
-            type: "password",
-            placeholder: "Paste the key",
-            body: [
-              API_KEY_HINTS[definition.id] ?? `Paste an API key for ${definition.name}.`,
-              "It is stored in Gloomberb's data directory and replaces any existing sign-in for this provider.",
-            ],
-          }],
-          async execute(values) {
-            await ensureAiRunHost();
-            // Errors surface in the wizard; Pi's messages never contain the key.
-            await saveAiRuntimeApiKey(definition.id, values?.apiKey ?? "");
-            // Pi stores the key without calling the provider, so a typo only
-            // shows up when a request is made.
-            ctx.notify({
-              body: `${apiKeyNoun(definition.id, definition.name)} saved. It is checked on the first request.`,
-              type: "success",
-            });
-          },
-        });
-      }
+      registerApiKeyCommands(ctx);
 
       ctx.registerTickerResearchTab({
         id: "ai-chat",

@@ -66,9 +66,9 @@ export interface AiRuntimeAuthMethod {
   type: AiRuntimeAuthType;
   label: string;
   /**
-   * True only when the current renderer-neutral host can complete this method
-   * without exposing a credential in an unmasked field. API keys qualify
-   * because they are typed into the command bar's masked password step.
+   * Pi can complete this method interactively: a browser or device flow for
+   * OAuth, or a typed key, which settings take in the command bar's masked
+   * password step rather than an unmasked field.
    */
   canLogin: boolean;
 }
@@ -80,6 +80,7 @@ export interface AiRuntimeAccount {
   connectionLabel: string;
   credentialSource?: string;
   credentialOrigin?: AiCredentialOrigin;
+  credentialType?: AiRuntimeAuthType;
   authMethods: AiRuntimeAuthMethod[];
   /** Browser or device-code sign-in is available. */
   canLogin: boolean;
