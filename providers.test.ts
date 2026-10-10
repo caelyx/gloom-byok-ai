@@ -39,9 +39,9 @@ describe("Pi provider catalog", () => {
       expect(definition.name.length).toBeGreaterThan(0);
       expect(definition.outputModes).toEqual(["plain", "structured", "screener"]);
       expect(definition.preferredModelIds.length).toBeGreaterThan(0);
-      expect(provider?.getModels().some((model) => (
-        definition.preferredModelIds.includes(model.id)
-      ))).toBe(true);
+      // Every curated default must be in Pi's catalog, or Auto silently skips it.
+      const catalogIds = new Set(provider?.getModels().map((model) => model.id));
+      expect(definition.preferredModelIds.filter((modelId) => !catalogIds.has(modelId))).toEqual([]);
       expect(definition).not.toHaveProperty("command");
       expect(definition).not.toHaveProperty("buildArgs");
     }

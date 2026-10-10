@@ -9,6 +9,7 @@ import {
   type AuthType,
   type Context,
   type CredentialStore,
+  type JsonObject,
   type Message,
   type Model,
   type Models,
@@ -294,7 +295,8 @@ function toPiAgentMessages(
       role: "assistant",
       content: message.content.map((content) => (
         content.type === "toolCall"
-          ? { ...content, arguments: { ...content.arguments } }
+          // Persisted history is read back from JSON, so its arguments are JSON.
+          ? { ...content, arguments: { ...content.arguments } as JsonObject }
           : { ...content }
       )),
       api: model.api,

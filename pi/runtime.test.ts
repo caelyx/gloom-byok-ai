@@ -19,8 +19,8 @@ function createFauxRuntime(options: { tokensPerSecond?: number } = {}) {
   const faux = fauxProvider({
     provider: "anthropic",
     models: [
-      { id: "claude-fable-5", name: "Fable" },
-      { id: "claude-opus-4-8", name: "Opus" },
+      { id: "claude-fable-5-1", name: "Fable" },
+      { id: "claude-opus-5-5", name: "Opus" },
     ],
     tokensPerSecond: options.tokensPerSecond,
   });
@@ -47,8 +47,8 @@ describe("PiAiRuntime", () => {
     });
     expect(catalog.providers[0]).not.toHaveProperty("uiId");
     expect(catalog.providers[0]?.models.map((model) => model.id)).toEqual([
-      "claude-fable-5",
-      "claude-opus-4-8",
+      "claude-fable-5-1",
+      "claude-opus-5-5",
     ]);
   });
 
@@ -71,7 +71,7 @@ describe("PiAiRuntime", () => {
       onChunk: (chunk) => chunks.push(chunk),
     }).done;
 
-    expect(requestedModel).toBe("claude-opus-4-8");
+    expect(requestedModel).toBe("claude-opus-5-5");
     expect(result).toBe("world");
     expect(chunks.at(-1)).toBe("world");
   });
@@ -86,7 +86,7 @@ describe("PiAiRuntime", () => {
   test("rejects an injected legacy provider instead of publishing a mismatched canonical entry", async () => {
     const legacy = fauxProvider({
       provider: "claude",
-      models: [{ id: "claude-opus-4-8", name: "Opus" }],
+      models: [{ id: "claude-opus-5-5", name: "Opus" }],
     });
     const models = createModels({ credentials: new InMemoryCredentialStore() });
     models.setProvider(legacy.provider);
@@ -100,7 +100,7 @@ describe("PiAiRuntime", () => {
 
   test("bridges OAuth events and prompts without returning credentials", async () => {
     const credentials = new InMemoryCredentialStore();
-    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-4-8" }] });
+    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-5-5" }] });
     const provider = createProvider({
       id: "anthropic",
       name: "Anthropic",
@@ -157,7 +157,7 @@ describe("PiAiRuntime", () => {
       refresh: "subscription-refresh",
       expires: Date.now() + 60_000,
     }));
-    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-4-8" }] });
+    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-5-5" }] });
     const provider = createProvider({
       id: "anthropic",
       name: "Anthropic",
@@ -210,7 +210,7 @@ describe("PiAiRuntime", () => {
       refresh: "expired-refresh",
       expires: Date.now() - 1,
     }));
-    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-4-8" }] });
+    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-5-5" }] });
     const provider = createProvider({
       id: "anthropic",
       name: "Anthropic",
