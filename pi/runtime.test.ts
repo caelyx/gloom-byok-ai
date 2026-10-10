@@ -9,7 +9,9 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { normalizeAiAgentHistory } from "../agent-history";
 import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
@@ -18,6 +20,7 @@ import {
   PiRunCancelledError,
   PiRuntimeError,
   defaultReasoning,
+  effectiveReasoning,
 } from "./runtime";
 
 function createFauxRuntime(options: { tokensPerSecond?: number } = {}) {
@@ -298,6 +301,68 @@ describe("PiAiRuntime", () => {
   });
 });
 
+describe("agent history replay", () => {
+  const claudeTurn = {
+    role: "assistant" as const,
+    content: [
+      { type: "thinking" as const, thinking: "Weighing it up", thinkingSignature: "sig-claude-only" },
+      { type: "text" as const, text: "The answer" },
+    ],
+  };
+
+  function replayed(agentMessages: unknown[]) {
+    const { faux, runtime } = createFauxRuntime();
+    return runtime.createAgent({
+      providerId: "anthropic",
+      modelId: "claude-sonnet-5-5",
+      agentMessages: normalizeAiAgentHistory(agentMessages),
+    }).then((agent) => ({ agent, model: faux.models.find((model) => model.id === "claude-sonnet-5-5")! }));
+  }
+
+  test("keeps the model that wrote each saved turn", async () => {
+    const { agent } = await replayed([
+      { role: "user", content: "Question" },
+      {
+        ...claudeTurn,
+        api: "anthropic-messages",
+        provider: "anthropic",
+        model: "claude-opus-5-5",
+        providerThinkingLevel: "medium",
+      },
+    ]);
+
+    expect(agent.state.messages.find((message) => message.role === "assistant")).toMatchObject({
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      providerThinkingLevel: "medium",
+    });
+  });
+
+  test("lets Pi turn another model's thinking into text instead of replaying its signature", async () => {
+    const { agent, model } = await replayed([
+      { role: "user", content: "Question" },
+      { ...claudeTurn, api: "anthropic-messages", provider: "anthropic", model: "claude-opus-5-5" },
+    ]);
+
+    const sent = JSON.stringify(transformMessages(agent.state.messages, model));
+    expect(sent).not.toContain("sig-claude-only");
+    expect(sent).toContain("Weighing it up");
+  });
+
+  test("treats turns saved without a model as foreign", async () => {
+    const { agent, model } = await replayed([{ role: "user", content: "Question" }, claudeTurn]);
+
+    expect(JSON.stringify(transformMessages(agent.state.messages, model))).not.toContain("sig-claude-only");
+  });
+
+  test("drops malformed origin fields when normalizing", () => {
+    expect(normalizeAiAgentHistory([{ ...claudeTurn, api: 7, provider: "anthropic" }])).toEqual([
+      { ...claudeTurn, provider: "anthropic" },
+    ]);
+  });
+});
+
 describe("saved model selections", () => {
   test("say how to recover when a saved model is no longer offered", async () => {
     const { runtime } = createFauxRuntime();
@@ -329,6 +394,15 @@ describe("default Claude effort", () => {
     expect(defaultReasoning(copilot.find((model) => model.id === "claude-sonnet-5.5")!)).toBe("medium");
     expect(defaultReasoning(openrouter.find((model) => model.id === "anthropic/claude-sonnet-5.5")!)).toBe("medium");
     expect(defaultReasoning(copilot.find((model) => model.id === "gpt-6.1-sol")!)).toBeUndefined();
+  });
+
+  test("asks for the lowest effort where a model cannot turn thinking off", () => {
+    const claude = new Map(anthropicProvider().getModels().map((model) => [model.id, model]));
+
+    expect(effectiveReasoning("off", claude.get("claude-sonnet-5-5")!)).toBe("low");
+    expect(effectiveReasoning("off", claude.get("claude-opus-4-8")!)).toBeUndefined();
+    expect(effectiveReasoning(undefined, claude.get("claude-opus-4-8")!)).toBe("medium");
+    expect(effectiveReasoning("high", claude.get("claude-sonnet-5-5")!)).toBe("high");
   });
 
   test("leaves non-Claude models on Anthropic's API alone", () => {

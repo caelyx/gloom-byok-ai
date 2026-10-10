@@ -143,7 +143,7 @@ export interface PiPromptRequest {
   systemPrompt?: string;
   messages?: PiConversationMessage[];
   tools?: Tool[];
-  /** Defaults to `defaultReasoning`; "off" runs without thinking. */
+  /** See `effectiveReasoning`. */
   reasoning?: ThinkingLevel | "off";
   sessionId?: string;
   signal?: AbortSignal;
@@ -235,13 +235,19 @@ function isAnthropicMessagesModel(model: Model<Api>): model is Model<"anthropic-
   return model.api === "anthropic-messages";
 }
 
-/** "off" asks for no thinking; leaving the level out takes the default. */
-function requestReasoning(
+/**
+ * The level a request runs at. Leaving it out takes `defaultReasoning`.
+ * "off" runs without thinking, or at the lowest effort on models that always
+ * think (Pi would otherwise send them "high").
+ */
+export function effectiveReasoning(
   requested: ThinkingLevel | "off" | undefined,
   model: Model<Api>,
 ): ThinkingLevel | undefined {
-  if (requested === "off") return undefined;
-  return requested ?? defaultReasoning(model);
+  if (requested !== "off") return requested ?? defaultReasoning(model);
+  const supported = getSupportedThinkingLevels(model);
+  if (supported.includes("off")) return undefined;
+  return supported.find((level): level is ThinkingLevel => level !== "off");
 }
 
 function modelSummary(model: Model<Api>, available: boolean): PiModelSummary {
@@ -300,6 +306,8 @@ function toPiMessages(
   });
 }
 
+const UNKNOWN_ORIGIN = "unknown";
+
 function toPiAgentMessages(
   messages: readonly AiAgentHistoryMessage[] | undefined,
   model: Model<Api>,
@@ -331,9 +339,13 @@ function toPiAgentMessages(
           ? { ...content, arguments: { ...content.arguments } as JsonObject }
           : { ...content }
       )),
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
+      // The model that wrote the turn, so Pi rewrites thinking and signatures
+      // when a thread moves to another model. Older saves have no record and
+      // count as foreign, which only costs them their signatures.
+      api: message.api ?? UNKNOWN_ORIGIN,
+      provider: message.provider ?? UNKNOWN_ORIGIN,
+      model: message.model ?? UNKNOWN_ORIGIN,
+      ...(message.providerThinkingLevel ? { providerThinkingLevel: message.providerThinkingLevel } : {}),
       usage: EMPTY_USAGE,
       stopReason: message.content.some((content) => content.type === "toolCall")
         ? "toolUse"
@@ -568,7 +580,7 @@ export class PiAiRuntime {
           tools: request.tools,
         };
         const stream = this.models.streamSimple(model, context, {
-          reasoning: requestReasoning(request.reasoning, model),
+          reasoning: effectiveReasoning(request.reasoning, model),
           sessionId: request.sessionId,
           signal: controller.signal,
         });
@@ -627,7 +639,7 @@ export class PiAiRuntime {
       initialState: {
         systemPrompt: request.systemPrompt ?? "",
         model,
-        thinkingLevel: request.thinkingLevel ?? defaultReasoning(model) ?? "off",
+        thinkingLevel: effectiveReasoning(request.thinkingLevel, model) ?? "off",
         messages: [
           ...toPiMessages(request.messages, model),
           ...toPiAgentMessages(request.agentMessages, model),
