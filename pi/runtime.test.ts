@@ -296,6 +296,18 @@ describe("PiAiRuntime", () => {
   });
 });
 
+describe("saved model selections", () => {
+  test("say how to recover when a saved model is no longer offered", async () => {
+    const { runtime } = createFauxRuntime();
+
+    await expect(runtime.resolveModel({ providerId: "anthropic", modelId: "claude-opus-4-1" }))
+      .rejects.toMatchObject({
+        code: "model_not_found",
+        message: "Claude does not offer claude-opus-4-1. Choose another model in pane settings.",
+      });
+  });
+});
+
 describe("default Claude effort", () => {
   test("is medium for adaptive-thinking Claude models and unset elsewhere", () => {
     const claude = new Map(anthropicProvider().getModels().map((model) => [model.id, model]));

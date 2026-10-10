@@ -506,7 +506,7 @@ export class PiAiRuntime {
       throw new PiRuntimeError("provider_not_configured", sanitizeErrorMessage(error), { cause: error });
     });
     if (!auth) {
-      throw new PiRuntimeError("provider_not_configured", `${provider.name} is not connected.`);
+      throw new PiRuntimeError("provider_not_configured", `${definition.name} is not connected.`);
     }
     const available = await this.models.getAvailable(providerId);
     const requestedModelId = selection.modelId?.trim();
@@ -522,10 +522,13 @@ export class PiAiRuntime {
           `${definition.name} has no curated default available for the connected account. Choose an available model explicitly.`,
         );
       }
-      throw new PiRuntimeError("model_not_found", `Unknown ${provider.name} model: ${requestedModelId}`);
+      throw new PiRuntimeError(
+        "model_not_found",
+        `${definition.name} does not offer ${requestedModelId}. Choose another model in pane settings.`,
+      );
     }
     if (!available.some((candidate) => candidate.id === model.id)) {
-      throw new PiRuntimeError("model_unavailable", `${model.name} is not available for the connected ${provider.name} account.`);
+      throw new PiRuntimeError("model_unavailable", `${model.name} is not available for the connected ${definition.name} account.`);
     }
     return model;
   }
