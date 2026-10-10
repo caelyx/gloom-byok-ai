@@ -5,6 +5,8 @@ import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
+  getCurrentSystemPrompt,
+  getCurrentTools,
 } from "@earendil-works/pi-ai";
 import { AI_PROVIDER_IDS, type AiProviderId } from "../providers";
 import type { AiAgentHistoryMessage } from "../agent-history";
@@ -22,7 +24,7 @@ function createHostFixture(sendRemoteRequest?: (
 ) => Promise<RemoteControlResponse>) {
   const faux = fauxProvider({
     provider: "anthropic",
-    models: [{ id: "claude-opus-4-8", name: "Opus" }],
+    models: [{ id: "claude-sonnet-5-5", name: "Sonnet" }],
   });
   const models = createModels({ credentials: new InMemoryCredentialStore() });
   models.setProvider(faux.provider);
@@ -120,17 +122,18 @@ describe("Pi AI host screener mode", () => {
     });
     fixture.faux.setResponses([
       (context) => {
-        expect(context.tools?.map((tool) => tool.name)).toEqual([
+        const tools = getCurrentTools(context.messages);
+        expect(tools.map((tool) => tool.name)).toEqual([
           "gloomberb_market_data",
           "submit_screener_results",
         ]);
-        const marketDataTool = context.tools?.find((tool) => tool.name === "gloomberb_market_data");
+        const marketDataTool = tools.find((tool) => tool.name === "gloomberb_market_data");
         const toolDefinition = JSON.stringify(marketDataTool);
         expect(toolDefinition).toContain('"quote"');
         expect(toolDefinition).not.toContain("gloomberb_remote");
         expect(toolDefinition).not.toContain("app.openCommandBar");
         expect(toolDefinition).not.toContain('"call"');
-        expect(context.systemPrompt).toContain("Never operate, navigate, alter, or type into the Gloomberb UI");
+        expect(getCurrentSystemPrompt(context.messages)).toContain("Never operate, navigate, alter, or type into the Gloomberb UI");
         return fauxAssistantMessage(fauxToolCall("gloomberb_market_data", {
           operation: "quote",
           symbol: "nvda",
@@ -245,7 +248,7 @@ describe("Pi AI host catalog and account connection", () => {
       id: "anthropic",
       label: "Claude",
       name: "Anthropic",
-      defaultModelId: "claude-opus-4-8",
+      defaultModelId: "claude-sonnet-5-5",
       authMethods: [
         { type: "oauth", label: "Anthropic (Claude Pro/Max)", canLogin: true },
         { type: "api_key", label: "Anthropic API key", canLogin: true },
@@ -600,14 +603,16 @@ describe("Pi AI host conversation history", () => {
 
     fixture.faux.setResponses([
       (context) => {
+        // Pi 1.x carries the system prompt and tools as a leading system message.
         expect(context.messages.map((message) => message.role)).toEqual([
+          "system",
           "user",
           "assistant",
           "toolResult",
           "assistant",
           "user",
         ]);
-        expect(context.messages[2]).toMatchObject({
+        expect(context.messages[3]).toMatchObject({
           role: "toolResult",
           toolName: "gloomberb_remote",
         });

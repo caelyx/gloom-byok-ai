@@ -41,4 +41,26 @@ describe("PiFileModelsStore", () => {
       "does not match other-provider",
     );
   });
+
+  test("accepts Pi 1.x image and classifier catalog entries", async () => {
+    const dataDir = await tempDataDir();
+    const store = new PiFileModelsStore(dataDir);
+    const base = {
+      name: "Typed",
+      provider: "typed-provider",
+      baseUrl: "https://example.test",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    } as const;
+    const entry = {
+      models: [
+        { ...base, id: "image-model", api: "openrouter-images", type: "image", output: ["image"] },
+        { ...base, id: "classifier-model", api: "typesafe-system-one", type: "classifier", contextWindow: 8_192 },
+      ],
+      etag: '"abc"',
+    } as const;
+
+    await store.write("typed-provider", structuredClone(entry) as never);
+    expect(await new PiFileModelsStore(dataDir).read("typed-provider")).toEqual(structuredClone(entry) as never);
+  });
 });

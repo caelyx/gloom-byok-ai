@@ -1,4 +1,4 @@
-import type { Api, Model, ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
+import type { AnyModel, ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { LockedJsonFile } from "./file-store";
 
@@ -38,28 +38,43 @@ function isCost(value: unknown): boolean {
     }));
 }
 
-function isModel(value: unknown): value is Model<Api> {
+function isModalities(value: unknown): boolean {
+  return Array.isArray(value) && value.every((entry) => entry === "text" || entry === "image");
+}
+
+/** Pi 1.x catalogs hold chat, image, and classifier models; untyped entries are chat. */
+function isModel(value: unknown): value is AnyModel {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const model = value as Record<string, unknown>;
-  return typeof model.id === "string"
+  const base = typeof model.id === "string"
     && typeof model.name === "string"
     && typeof model.api === "string"
     && typeof model.provider === "string"
     && typeof model.baseUrl === "string"
-    && typeof model.reasoning === "boolean"
-    && Array.isArray(model.input)
-    && model.input.every((input) => input === "text" || input === "image")
+    && isModalities(model.input)
     && isCost(model.cost)
-    && isFiniteNumber(model.contextWindow)
-    && isFiniteNumber(model.maxTokens)
     && (model.headers === undefined || isStringRecord(model.headers));
+  if (!base) return false;
+  switch (model.type) {
+    case undefined:
+    case "chat":
+      return typeof model.reasoning === "boolean"
+        && isFiniteNumber(model.contextWindow)
+        && isFiniteNumber(model.maxTokens);
+    case "image":
+      return isModalities(model.output);
+    case "classifier":
+      return isFiniteNumber(model.contextWindow);
+    default:
+      return false;
+  }
 }
 
 function validateEntry(value: unknown, providerId?: string): ModelsStoreEntry {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The cached AI model entry is invalid.");
   }
-  const candidate = value as { models?: unknown; lastModified?: unknown; checkedAt?: unknown };
+  const candidate = value as { models?: unknown; lastModified?: unknown; checkedAt?: unknown; etag?: unknown };
   if (!Array.isArray(candidate.models) || !candidate.models.every(isModel)) {
     throw new Error("The cached AI model entry contains invalid models.");
   }
@@ -71,6 +86,9 @@ function validateEntry(value: unknown, providerId?: string): ModelsStoreEntry {
   }
   if (candidate.checkedAt !== undefined && !isFiniteNumber(candidate.checkedAt)) {
     throw new Error("The cached AI model check timestamp is invalid.");
+  }
+  if (candidate.etag !== undefined && typeof candidate.etag !== "string") {
+    throw new Error("The cached AI model ETag is invalid.");
   }
   return structuredClone(candidate) as ModelsStoreEntry;
 }

@@ -9,6 +9,7 @@ import {
   type AuthType,
   type Context,
   type CredentialStore,
+  type JsonObject,
   type Message,
   type Model,
   type Models,
@@ -142,7 +143,8 @@ export interface PiPromptRequest {
   systemPrompt?: string;
   messages?: PiConversationMessage[];
   tools?: Tool[];
-  reasoning?: ThinkingLevel;
+  /** See `effectiveReasoning`. */
+  reasoning?: ThinkingLevel | "off";
   sessionId?: string;
   signal?: AbortSignal;
   onChunk?: (cumulativeText: string) => void;
@@ -211,6 +213,43 @@ function isAssistantMessage(message: AgentMessage): message is AssistantMessage 
   return !!message && typeof message === "object" && "role" in message && message.role === "assistant";
 }
 
+/**
+ * The effort a Claude request runs at when the caller names no level.
+ *
+ * Claude models with adaptive thinking take an effort level, and medium is
+ * Gloomberb's default. Without one, Pi sends "high" to the models it manages
+ * effort for (Opus 5, the 5.5 family, Fable 5.1) and turns thinking off on
+ * the others, such as Opus 4.8, Sonnet 5, and every Claude model on Copilot.
+ * Claude models with budget-based thinking (the 4.5 generation and earlier)
+ * get nothing, because a level there switches thinking on rather than
+ * setting an effort.
+ */
+export function defaultReasoning(model: Model<Api>): ThinkingLevel | undefined {
+  if (!isAnthropicMessagesModel(model) || model.compat?.forceAdaptiveThinking !== true) return undefined;
+  // Ids are "claude-…" directly and on Copilot, "anthropic/claude-…" on OpenRouter.
+  if (!/(^|\/)claude-/.test(model.id)) return undefined;
+  return getSupportedThinkingLevels(model).includes("medium") ? "medium" : undefined;
+}
+
+function isAnthropicMessagesModel(model: Model<Api>): model is Model<"anthropic-messages"> {
+  return model.api === "anthropic-messages";
+}
+
+/**
+ * The level a request runs at. Leaving it out takes `defaultReasoning`.
+ * "off" runs without thinking, or at the lowest effort on models that always
+ * think (Pi would otherwise send them "high").
+ */
+export function effectiveReasoning(
+  requested: ThinkingLevel | "off" | undefined,
+  model: Model<Api>,
+): ThinkingLevel | undefined {
+  if (requested !== "off") return requested ?? defaultReasoning(model);
+  const supported = getSupportedThinkingLevels(model);
+  if (supported.includes("off")) return undefined;
+  return supported.find((level): level is ThinkingLevel => level !== "off");
+}
+
 function modelSummary(model: Model<Api>, available: boolean): PiModelSummary {
   return {
     id: model.id,
@@ -267,6 +306,8 @@ function toPiMessages(
   });
 }
 
+const UNKNOWN_ORIGIN = "unknown";
+
 function toPiAgentMessages(
   messages: readonly AiAgentHistoryMessage[] | undefined,
   model: Model<Api>,
@@ -294,12 +335,17 @@ function toPiAgentMessages(
       role: "assistant",
       content: message.content.map((content) => (
         content.type === "toolCall"
-          ? { ...content, arguments: { ...content.arguments } }
+          // Persisted history is read back from JSON, so its arguments are JSON.
+          ? { ...content, arguments: { ...content.arguments } as JsonObject }
           : { ...content }
       )),
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
+      // The model that wrote the turn, so Pi rewrites thinking and signatures
+      // when a thread moves to another model. Older saves have no record and
+      // count as foreign, which only costs them their signatures.
+      api: message.api ?? UNKNOWN_ORIGIN,
+      provider: message.provider ?? UNKNOWN_ORIGIN,
+      model: message.model ?? UNKNOWN_ORIGIN,
+      ...(message.providerThinkingLevel ? { providerThinkingLevel: message.providerThinkingLevel } : {}),
       usage: EMPTY_USAGE,
       stopReason: message.content.some((content) => content.type === "toolCall")
         ? "toolUse"
@@ -487,7 +533,7 @@ export class PiAiRuntime {
       throw new PiRuntimeError("provider_not_configured", sanitizeErrorMessage(error), { cause: error });
     });
     if (!auth) {
-      throw new PiRuntimeError("provider_not_configured", `${provider.name} is not connected.`);
+      throw new PiRuntimeError("provider_not_configured", `${definition.name} is not connected.`);
     }
     const available = await this.models.getAvailable(providerId);
     const requestedModelId = selection.modelId?.trim();
@@ -503,10 +549,13 @@ export class PiAiRuntime {
           `${definition.name} has no curated default available for the connected account. Choose an available model explicitly.`,
         );
       }
-      throw new PiRuntimeError("model_not_found", `Unknown ${provider.name} model: ${requestedModelId}`);
+      throw new PiRuntimeError(
+        "model_not_found",
+        `${definition.name} does not offer ${requestedModelId}. Choose another model.`,
+      );
     }
     if (!available.some((candidate) => candidate.id === model.id)) {
-      throw new PiRuntimeError("model_unavailable", `${model.name} is not available for the connected ${provider.name} account.`);
+      throw new PiRuntimeError("model_unavailable", `${model.name} is not available for the connected ${definition.name} account.`);
     }
     return model;
   }
@@ -531,7 +580,7 @@ export class PiAiRuntime {
           tools: request.tools,
         };
         const stream = this.models.streamSimple(model, context, {
-          reasoning: request.reasoning,
+          reasoning: effectiveReasoning(request.reasoning, model),
           sessionId: request.sessionId,
           signal: controller.signal,
         });
@@ -590,7 +639,7 @@ export class PiAiRuntime {
       initialState: {
         systemPrompt: request.systemPrompt ?? "",
         model,
-        thinkingLevel: request.thinkingLevel ?? "off",
+        thinkingLevel: effectiveReasoning(request.thinkingLevel, model) ?? "off",
         messages: [
           ...toPiMessages(request.messages, model),
           ...toPiAgentMessages(request.agentMessages, model),

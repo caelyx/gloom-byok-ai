@@ -24,15 +24,31 @@ export type AiAgentAssistantContent =
   | AiAgentThinkingContent
   | AiAgentToolCallContent;
 
+/**
+ * Which model wrote an assistant turn. Thinking signatures are valid only for
+ * that model, and Pi decides whether to replay or rewrite them by comparing
+ * these with the model a thread runs on next. Turns saved before this was
+ * recorded have none of them.
+ */
+export interface AiAgentAssistantOrigin {
+  api?: string;
+  provider?: string;
+  model?: string;
+  /** The effort Pi ran the turn at, which it re-sends for models it manages. */
+  providerThinkingLevel?: string;
+}
+
+const ASSISTANT_ORIGIN_KEYS = ["api", "provider", "model", "providerThinkingLevel"] as const;
+
 export type AiAgentHistoryMessage =
   | {
       role: "user";
       content: string;
     }
-  | {
+  | ({
       role: "assistant";
       content: AiAgentAssistantContent[];
-    }
+    } & AiAgentAssistantOrigin)
   | {
       role: "toolResult";
       toolCallId: string;
@@ -110,9 +126,15 @@ function normalizeAiAgentHistoryMessage(value: unknown): AiAgentHistoryMessage |
   if (value.role === "assistant" && Array.isArray(value.content)) {
     const content = value.content.map(normalizeAssistantContent);
     if (content.some((item) => item === null)) return null;
+    const origin: AiAgentAssistantOrigin = {};
+    for (const key of ASSISTANT_ORIGIN_KEYS) {
+      const field = optionalString(value[key]);
+      if (field) origin[key] = field;
+    }
     return {
       role: "assistant",
       content: content as AiAgentAssistantContent[],
+      ...origin,
     };
   }
   if (
