@@ -182,6 +182,30 @@ describe("AI plugin API-key entry", () => {
       .toBeUndefined();
   });
 
+  test("names keys without repeating API and calls Copilot's a token", () => {
+    setAiRuntimeCatalog(catalog([]));
+    const { commands } = setupPlugin();
+    const label = (providerId: string) => commands.find((command) => (
+      command.id === `ai-api-key:${providerId}`
+    ))?.label;
+
+    expect(label("openai")).toBe("Set OpenAI API key");
+    expect(label("github-copilot")).toBe("Set GitHub Copilot token");
+    expect(label("anthropic")).toBe("Set Claude API key");
+  });
+
+  test("keeps a sign-in error visible instead of the sign-in hint", () => {
+    const failing = catalog([]);
+    failing.accounts = failing.accounts.map((account) => account.providerId === "anthropic"
+      ? { ...account, connectionState: "error" as const, connectionLabel: "OAuth refresh failed" }
+      : account);
+    setAiRuntimeCatalog(failing);
+    const { settings } = workspaceSettings(setupPlugin());
+
+    expect(settings?.fields.find((field) => field.key === "account:anthropic"))
+      .toMatchObject({ description: "OAuth refresh failed" });
+  });
+
   test("saves the key from a masked command-bar step and reports only status", async () => {
     setAiRuntimeCatalog(catalog([]));
     const saved: Array<[string, string]> = [];
@@ -211,7 +235,7 @@ describe("AI plugin API-key entry", () => {
     expect(getAiRuntimeCatalog().accounts.find((account) => account.providerId === "google"))
       .toMatchObject({ connectionState: "connected" });
     expect(setup.notifications.at(-1)).toEqual({
-      body: "Google Gemini is connected with your API key.",
+      body: "Google Gemini API key saved. It is checked on the first request.",
       type: "success",
     });
     expect(JSON.stringify(setup.notifications)).not.toContain("AIza-secret");

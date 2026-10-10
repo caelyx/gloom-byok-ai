@@ -125,8 +125,14 @@ function apiKeyCommandId(providerId: string): string {
   return `ai-api-key:${providerId}`;
 }
 
-function apiKeyCommandLabel(providerLabel: string): string {
-  return `Set ${providerLabel} API key`;
+/** What the provider calls the secret: Copilot takes a GitHub token. */
+function apiKeyNoun(providerId: AiProviderId, providerLabel: string): string {
+  if (providerId === "github-copilot") return `${providerLabel} token`;
+  return `${providerLabel.replace(/ API$/, "")} API key`;
+}
+
+function apiKeyCommandLabel(providerId: AiProviderId, providerLabel: string): string {
+  return `Set ${apiKeyNoun(providerId, providerLabel)}`;
 }
 
 function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
@@ -135,7 +141,7 @@ function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
     providerId: account.providerId,
     providerLabel: account.providerLabel,
     variant: "api-key",
-    label: `${account.providerLabel} API key`,
+    label: apiKeyNoun(account.providerId, account.providerLabel),
     description: connected
       ? `Replaces the current connection (${account.connectionLabel}).`
       : API_KEY_HINTS[account.providerId] ?? `Paste an API key for ${account.providerLabel}.`,
@@ -144,7 +150,7 @@ function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
       // Pane settings have no masked field, so the key goes into the command
       // bar's password step instead. The query lands on that command.
       context.close();
-      context.openCommandBar(apiKeyCommandLabel(account.providerLabel));
+      context.openCommandBar(apiKeyCommandLabel(account.providerId, account.providerLabel));
     },
   };
 }
@@ -165,7 +171,7 @@ function signInSettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
     providerId: account.providerId,
     providerLabel: account.providerLabel,
     // Next to an API-key row, say which account a browser sign-in uses.
-    description: !disconnectable && account.canLogin && oauthLabel
+    description: account.connectionState === "not_connected" && account.canLogin && oauthLabel
       ? `Browser sign-in: ${oauthLabel}.`
       : account.connectionLabel,
     actionLabel: disconnectable ? "Disconnect" : "Connect",
@@ -341,14 +347,14 @@ export function createByokAiPlugin({ setupRunHost, cliCommands }: ByokAiPluginOp
         ));
         ctx.registerCommand({
           id: apiKeyCommandId(definition.id),
-          label: apiKeyCommandLabel(definition.name),
+          label: apiKeyCommandLabel(definition.id, definition.name),
           keywords: ["ai", "api key", "key", "connect", definition.id, definition.name.toLowerCase()],
           category: "config",
           description: `Connect ${definition.name} with an API key instead of a browser sign-in.`,
           hidden: () => !account()?.canSetApiKey,
           wizard: [{
             key: "apiKey",
-            label: `${definition.name} API key`,
+            label: apiKeyNoun(definition.id, definition.name),
             type: "password",
             placeholder: "Paste the key",
             body: [
@@ -360,8 +366,10 @@ export function createByokAiPlugin({ setupRunHost, cliCommands }: ByokAiPluginOp
             await ensureAiRunHost();
             // Errors surface in the wizard; Pi's messages never contain the key.
             await saveAiRuntimeApiKey(definition.id, values?.apiKey ?? "");
+            // Pi stores the key without calling the provider, so a typo only
+            // shows up when a request is made.
             ctx.notify({
-              body: `${definition.name} is connected with your API key.`,
+              body: `${apiKeyNoun(definition.id, definition.name)} saved. It is checked on the first request.`,
               type: "success",
             });
           },

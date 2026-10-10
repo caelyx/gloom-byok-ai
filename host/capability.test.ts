@@ -13,6 +13,15 @@ const catalog: AiRuntimeCatalog = {
   models: [],
 };
 
+function save(capability: ReturnType<typeof createAiRunnerCapability>, payload: unknown) {
+  return new Promise((resolve, reject) => {
+    void Promise.resolve(capability.operations.saveProviderApiKey!.subscribe!(payload, (event: any) => {
+      if (event.kind === "account-connected") resolve(event.catalog);
+      else if (event.kind === "account-error") reject(new Error(event.error));
+    }, {} as never)).catch(reject);
+  });
+}
+
 function capabilityWith(host: Partial<AiRunHost>) {
   return createAiRunnerCapability(async () => ({
     run: () => ({ done: Promise.resolve(""), cancel() {} }),
@@ -22,7 +31,7 @@ function capabilityWith(host: Partial<AiRunHost>) {
 }
 
 describe("AI runner capability API-key entry", () => {
-  test("forwards a typed key to the Bun host as a renderer-safe action", async () => {
+  test("forwards a typed key to the Bun host only as a renderer stream", async () => {
     const saved: Array<[string, string]> = [];
     const capability = capabilityWith({
       async saveApiKey(providerId, apiKey) {
@@ -32,9 +41,11 @@ describe("AI runner capability API-key entry", () => {
     });
     const operation = capability.operations.saveProviderApiKey!;
 
-    expect(operation).toMatchObject({ kind: "action", rendererSafe: true });
-    expect(await operation.handler!({ providerId: "google", apiKey: "AIza-secret" }, {} as never))
-      .toEqual(catalog);
+    // Remote control and `gloomberb api` reach capabilities through invoke,
+    // so an agent with the remote tool must not find a handler here.
+    expect(operation).toMatchObject({ kind: "stream", rendererSafe: true });
+    expect(operation.handler).toBeUndefined();
+    expect(await save(capability, { providerId: "google", apiKey: "AIza-secret" })).toEqual(catalog);
     expect(saved).toEqual([["google", "AIza-secret"]]);
   });
 
@@ -46,10 +57,8 @@ describe("AI runner capability API-key entry", () => {
         return catalog;
       },
     });
-    const handler = capability.operations.saveProviderApiKey!.handler!;
-
-    await expect(handler({ providerId: "google", apiKey: "" }, {} as never)).rejects.toThrow("API key is required");
-    await expect(handler({ providerId: "openrouter", apiKey: "sk-or" }, {} as never)).rejects.toThrow("Unknown AI provider");
+    await expect(save(capability, { providerId: "google", apiKey: "" })).rejects.toThrow("API key is required");
+    await expect(save(capability, { providerId: "openrouter", apiKey: "sk-or" })).rejects.toThrow("Unknown AI provider");
     expect(saved).toEqual([]);
   });
 });

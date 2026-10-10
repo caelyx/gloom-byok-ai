@@ -132,13 +132,27 @@ export function createAiRunnerCapability(
         if (!aiHost.disconnect) throw new Error("In-app AI account disconnection is unavailable.");
         return aiHost.disconnect(providerId);
       }, "action"),
-      saveProviderApiKey: op(async (input: any) => {
+      // A stream on purpose: remote control (which the AI Agent drives) and
+      // `gloomberb api` reach capabilities through invoke only, so a model
+      // cannot swap the user's credential for one it controls.
+      saveProviderApiKey: stream(async (input: any, emit) => {
         const aiHost = await getHost();
         const providerId = await requireCatalogProvider(input.providerId);
         const apiKey = requireString(input.apiKey, "API key");
         if (!aiHost.saveApiKey) throw new Error("Saving an AI API key is unavailable.");
-        return aiHost.saveApiKey(providerId, apiKey);
-      }, "action"),
+        let disposed = false;
+        aiHost.saveApiKey(providerId, apiKey).then((catalog) => {
+          if (!disposed) emit({ kind: "account-connected", catalog });
+        }).catch((error) => {
+          if (!disposed) emit({
+            kind: "account-error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return () => {
+          disposed = true;
+        };
+      }),
       checkProviderStatus: op(async (input: any) => {
         const aiHost = await getHost();
         const providerId = await requireCatalogProvider(input.providerId);
