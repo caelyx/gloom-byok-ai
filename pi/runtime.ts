@@ -440,6 +440,33 @@ export class PiAiRuntime {
     }
   }
 
+  /**
+   * Stores an API key the user typed, through the provider's own API-key login
+   * so Pi decides the credential shape. It replaces any stored sign-in for the
+   * provider, and like `login` only non-secret status comes back.
+   */
+  async saveApiKey(providerId: AiProviderId, apiKey: string): Promise<PiProviderSummary> {
+    if (!this.models.getProvider(providerId)) {
+      throw new PiRuntimeError("provider_not_found", `Unknown AI provider: ${providerId}`);
+    }
+    const key = apiKey.trim();
+    if (!key) throw new PiRuntimeError("login_failed", "Enter an API key.");
+    try {
+      await this.models.login(providerId, "api_key", {
+        notify: () => {},
+        prompt: async (prompt) => {
+          if (prompt.type !== "secret") {
+            throw new Error(`${prompt.message} cannot be answered with an API key.`);
+          }
+          return key;
+        },
+      });
+    } catch (error) {
+      throw new PiRuntimeError("login_failed", sanitizeErrorMessage(error), { cause: error });
+    }
+    return this.getProviderSummary(providerId);
+  }
+
   async logout(providerId: string): Promise<PiProviderSummary> {
     if (!this.models.getProvider(providerId)) {
       throw new PiRuntimeError("provider_not_found", `Unknown AI provider: ${providerId}`);

@@ -81,6 +81,9 @@ export function createBridgeAiRunHost(): AiRunHost {
     disconnect(providerId) {
       return invoke("disconnectProvider", { providerId });
     },
+    saveApiKey(providerId, apiKey) {
+      return invoke("saveProviderApiKey", { providerId, apiKey });
+    },
     checkStatus(providerId) {
       return invoke("checkProviderStatus", { providerId });
     },

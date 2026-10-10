@@ -132,6 +132,13 @@ export function createAiRunnerCapability(
         if (!aiHost.disconnect) throw new Error("In-app AI account disconnection is unavailable.");
         return aiHost.disconnect(providerId);
       }, "action"),
+      saveProviderApiKey: op(async (input: any) => {
+        const aiHost = await getHost();
+        const providerId = await requireCatalogProvider(input.providerId);
+        const apiKey = requireString(input.apiKey, "API key");
+        if (!aiHost.saveApiKey) throw new Error("Saving an AI API key is unavailable.");
+        return aiHost.saveApiKey(providerId, apiKey);
+      }, "action"),
       checkProviderStatus: op(async (input: any) => {
         const aiHost = await getHost();
         const providerId = await requireCatalogProvider(input.providerId);

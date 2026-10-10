@@ -72,6 +72,9 @@ type RemoteRequestSender = (
 
 function connectionLabel(provider: PiProviderSummary): string {
   if (provider.connection.state === "connected") {
+    if (provider.connection.type === "api_key" && provider.connection.origin === "stored") {
+      return "Connected with an API key saved in Gloomberb";
+    }
     return provider.connection.source
       ? `Connected with ${provider.connection.source}`
       : "Connected in Gloomberb";
@@ -110,6 +113,7 @@ export function toAiRuntimeCatalog(catalog: PiCatalog): AiRuntimeCatalog {
     accounts: catalog.providers
       .map((provider) => {
         const loginMethod = provider.authMethods.find((method) => method.type === "oauth" && method.canLogin);
+        const apiKeyMethod = provider.authMethods.find((method) => method.type === "api_key" && method.canLogin);
         return {
           providerId: provider.id,
           providerLabel: provider.label,
@@ -121,13 +125,9 @@ export function toAiRuntimeCatalog(catalog: PiCatalog): AiRuntimeCatalog {
                 credentialOrigin: provider.connection.origin,
               }
             : {}),
-          authMethods: provider.authMethods.map((method) => ({
-            ...method,
-            // Secret entry needs a masked renderer interaction. Until that
-            // exists, API keys are resolved from Pi's store or environment.
-            canLogin: method.type === "oauth" && method.canLogin,
-          })),
+          authMethods: provider.authMethods.map((method) => ({ ...method })),
           canLogin: loginMethod !== undefined,
+          canSetApiKey: apiKeyMethod !== undefined,
           canDisconnect: canDisconnectProvider(provider),
           loginType: loginMethod?.type,
         };
@@ -416,7 +416,7 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
         ));
         if (!loginMethod || loginMethod.type !== "oauth") {
           throw new Error(
-            `${summary.label} does not offer an in-app browser sign-in flow. Configure its API key in the environment or Pi credential store.`,
+            `${summary.label} does not offer an in-app browser sign-in flow. Enter an API key in AI pane settings instead.`,
           );
         }
         let browserLaunch: Promise<void> | null = null;
@@ -458,6 +458,10 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
       });
       pendingConnections.set(pendingKey, connection);
       return connection;
+    },
+    async saveApiKey(providerId, apiKey) {
+      await runtime.saveApiKey(providerId, apiKey);
+      return getCatalog();
     },
     async disconnect(providerId) {
       const summary = await runtime.getProviderSummary(providerId);

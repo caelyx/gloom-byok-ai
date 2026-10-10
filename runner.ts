@@ -67,7 +67,8 @@ export interface AiRuntimeAuthMethod {
   label: string;
   /**
    * True only when the current renderer-neutral host can complete this method
-   * without exposing a credential in an unmasked field.
+   * without exposing a credential in an unmasked field. API keys qualify
+   * because they are typed into the command bar's masked password step.
    */
   canLogin: boolean;
 }
@@ -80,7 +81,10 @@ export interface AiRuntimeAccount {
   credentialSource?: string;
   credentialOrigin?: AiCredentialOrigin;
   authMethods: AiRuntimeAuthMethod[];
+  /** Browser or device-code sign-in is available. */
   canLogin: boolean;
+  /** An API key can be typed in and stored for this provider. */
+  canSetApiKey: boolean;
   canDisconnect: boolean;
   loginType?: AiRuntimeAuthType;
 }
@@ -119,6 +123,8 @@ export interface AiRunHost {
     onAuthEvent?: (event: AiAuthProgressEvent) => void,
   ): Promise<AiRuntimeCatalog>;
   disconnect?(providerId: AiProviderId): Promise<AiRuntimeCatalog>;
+  /** Stores a typed API key in the runtime's credential store. */
+  saveApiKey?(providerId: AiProviderId, apiKey: string): Promise<AiRuntimeCatalog>;
 }
 
 export interface AiProviderStatusResult {
@@ -260,6 +266,18 @@ export async function disconnectAiRuntimeProvider(providerId: string): Promise<A
     throw new Error("In-app AI account disconnection is unavailable in this renderer.");
   }
   publishCatalog(await configuredHost.disconnect(canonicalProviderId(providerId)));
+  return getAiRuntimeCatalog();
+}
+
+export async function saveAiRuntimeApiKey(
+  providerId: string,
+  apiKey: string,
+): Promise<AiRuntimeCatalog> {
+  if (!configuredHost?.saveApiKey) {
+    throw new Error("Saving an AI API key is unavailable in this renderer.");
+  }
+  if (!apiKey.trim()) throw new Error("Enter an API key.");
+  publishCatalog(await configuredHost.saveApiKey(canonicalProviderId(providerId), apiKey));
   return getAiRuntimeCatalog();
 }
 

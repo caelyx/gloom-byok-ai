@@ -34,6 +34,7 @@ function catalog(connectionState: "connected" | "not_connected"): AiRuntimeCatal
         : {}),
       authMethods: [{ type: "oauth", label: "ChatGPT Plus/Pro", canLogin: true }],
       canLogin: true,
+      canSetApiKey: false,
       canDisconnect: connected,
       loginType: "oauth",
     }],

@@ -39,6 +39,8 @@ function catalog(readyProviderIds: readonly AiProviderId[]): AiRuntimeCatalog {
         "github-copilot",
         "xai",
       ].includes(providerId);
+      // Mirrors Pi: every provider but ChatGPT also takes a typed API key.
+      const supportsApiKey = providerId !== "openai-codex";
       return {
         providerId,
         providerLabel: definition.name,
@@ -48,10 +50,12 @@ function catalog(readyProviderIds: readonly AiProviderId[]): AiRuntimeCatalog {
           credentialSource: "OAuth",
           credentialOrigin: "stored" as const,
         } : {}),
-        authMethods: supportsOAuth
-          ? [{ type: "oauth" as const, label: "Sign in", canLogin: true }]
-          : [{ type: "api_key" as const, label: "API key", canLogin: false }],
+        authMethods: [
+          ...(supportsOAuth ? [{ type: "oauth" as const, label: "Sign in", canLogin: true }] : []),
+          ...(supportsApiKey ? [{ type: "api_key" as const, label: "API key", canLogin: true }] : []),
+        ],
         canLogin: supportsOAuth,
+        canSetApiKey: supportsApiKey,
         canDisconnect: connected,
         ...(supportsOAuth ? { loginType: "oauth" as const } : {}),
       };
