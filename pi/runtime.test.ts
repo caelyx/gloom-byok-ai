@@ -10,7 +10,9 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import {
   PiAiRuntime,
   PiRunCancelledError,
@@ -23,7 +25,7 @@ function createFauxRuntime(options: { tokensPerSecond?: number } = {}) {
     provider: "anthropic",
     models: [
       { id: "claude-fable-5-1", name: "Fable" },
-      { id: "claude-sonnet-5-5", name: "Opus" },
+      { id: "claude-sonnet-5-5", name: "Sonnet" },
     ],
     tokensPerSecond: options.tokensPerSecond,
   });
@@ -89,7 +91,7 @@ describe("PiAiRuntime", () => {
   test("rejects an injected legacy provider instead of publishing a mismatched canonical entry", async () => {
     const legacy = fauxProvider({
       provider: "claude",
-      models: [{ id: "claude-sonnet-5-5", name: "Opus" }],
+      models: [{ id: "claude-sonnet-5-5", name: "Sonnet" }],
     });
     const models = createModels({ credentials: new InMemoryCredentialStore() });
     models.setProvider(legacy.provider);
@@ -303,7 +305,7 @@ describe("saved model selections", () => {
     await expect(runtime.resolveModel({ providerId: "anthropic", modelId: "claude-opus-4-1" }))
       .rejects.toMatchObject({
         code: "model_not_found",
-        message: "Claude does not offer claude-opus-4-1. Choose another model in pane settings.",
+        message: "Claude does not offer claude-opus-4-1. Choose another model.",
       });
   });
 });
@@ -320,12 +322,29 @@ describe("default Claude effort", () => {
       .toBeUndefined();
   });
 
+  test("covers Claude reached through Copilot and OpenRouter", () => {
+    const copilot = githubCopilotProvider().getModels();
+    const openrouter = openrouterProvider().getModels();
+
+    expect(defaultReasoning(copilot.find((model) => model.id === "claude-sonnet-5.5")!)).toBe("medium");
+    expect(defaultReasoning(openrouter.find((model) => model.id === "anthropic/claude-sonnet-5.5")!)).toBe("medium");
+    expect(defaultReasoning(copilot.find((model) => model.id === "gpt-6.1-sol")!)).toBeUndefined();
+  });
+
+  test("leaves non-Claude models on Anthropic's API alone", () => {
+    const [claude] = anthropicProvider().getModels().filter((model) => model.id === "claude-sonnet-5-5");
+
+    expect(defaultReasoning({ ...claude!, id: "kimi-for-coding", provider: "kimi-coding" })).toBeUndefined();
+  });
+
   function adaptiveClaudeRuntime() {
     const faux = fauxProvider({
       provider: "anthropic",
       api: "anthropic-messages",
       models: [{ id: "claude-sonnet-5-5", name: "Sonnet", reasoning: true }],
     });
+    // The faux provider takes no compat flags, so mark its model as an
+    // adaptive-thinking one the way Pi's Anthropic catalog does.
     for (const model of faux.models) {
       (model as { compat?: unknown }).compat = { forceAdaptiveThinking: true };
     }
@@ -334,38 +353,41 @@ describe("default Claude effort", () => {
     return { faux, runtime: new PiAiRuntime({ models }) };
   }
 
-  test("reaches plain runs, and an explicit level wins", async () => {
-    const { faux, runtime } = adaptiveClaudeRuntime();
+  function recordReasoning(faux: ReturnType<typeof adaptiveClaudeRuntime>["faux"], count: number) {
     const levels: unknown[] = [];
-    faux.setResponses([
-      (_context, options) => {
-        levels.push(options?.reasoning);
-        return fauxAssistantMessage("one");
-      },
-      (_context, options) => {
-        levels.push(options?.reasoning);
-        return fauxAssistantMessage("two");
-      },
-    ]);
+    faux.setResponses(Array.from({ length: count }, () => (_context: unknown, options?: { reasoning?: unknown }) => {
+      levels.push(options?.reasoning);
+      return fauxAssistantMessage("ok");
+    }));
+    return levels;
+  }
+
+  test("reaches plain runs", async () => {
+    const { faux, runtime } = adaptiveClaudeRuntime();
+    const levels = recordReasoning(faux, 1);
 
     await runtime.runText({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "a" }).done;
-    await runtime.runText({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "b", reasoning: "high" }).done;
-
-    expect(levels).toEqual(["medium", "high"]);
-  });
-
-  test("reaches AI Agent threads", async () => {
-    const { faux, runtime } = adaptiveClaudeRuntime();
-    const levels: unknown[] = [];
-    faux.setResponses([
-      (_context, options) => {
-        levels.push(options?.reasoning);
-        return fauxAssistantMessage("done");
-      },
-    ]);
-
-    await runtime.runAgent({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "go" }).done;
 
     expect(levels).toEqual(["medium"]);
+  });
+
+  test("gives way to a level a plain run asks for, including off", async () => {
+    const { faux, runtime } = adaptiveClaudeRuntime();
+    const levels = recordReasoning(faux, 2);
+
+    await runtime.runText({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "a", reasoning: "high" }).done;
+    await runtime.runText({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "b", reasoning: "off" }).done;
+
+    expect(levels).toEqual(["high", undefined]);
+  });
+
+  test("reaches AI Agent threads and gives way to a requested level", async () => {
+    const { faux, runtime } = adaptiveClaudeRuntime();
+    const levels = recordReasoning(faux, 2);
+
+    await runtime.runAgent({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "go" }).done;
+    await runtime.runAgent({ providerId: "anthropic", modelId: "claude-sonnet-5-5", prompt: "go", thinkingLevel: "off" }).done;
+
+    expect(levels).toEqual(["medium", undefined]);
   });
 });

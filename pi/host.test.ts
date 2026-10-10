@@ -24,7 +24,7 @@ function createHostFixture(sendRemoteRequest?: (
 ) => Promise<RemoteControlResponse>) {
   const faux = fauxProvider({
     provider: "anthropic",
-    models: [{ id: "claude-sonnet-5-5", name: "Opus" }],
+    models: [{ id: "claude-sonnet-5-5", name: "Sonnet" }],
   });
   const models = createModels({ credentials: new InMemoryCredentialStore() });
   models.setProvider(faux.provider);
