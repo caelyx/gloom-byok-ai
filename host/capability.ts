@@ -132,6 +132,28 @@ export function createAiRunnerCapability(
         if (!aiHost.disconnect) throw new Error("In-app AI account disconnection is unavailable.");
         return aiHost.disconnect(providerId);
       }, "action"),
+      // A stream on purpose: remote control, which the AI Agent drives, calls
+      // capabilities through invoke only. The agent can still reach the
+      // masked command by driving the UI, which the Pi host refuses while a
+      // reply is running.
+      saveProviderApiKey: stream(async (input: any, emit) => {
+        const aiHost = await getHost();
+        const providerId = await requireCatalogProvider(input.providerId);
+        const apiKey = requireString(input.apiKey, "API key");
+        if (!aiHost.saveApiKey) throw new Error("Saving an AI API key is unavailable.");
+        let disposed = false;
+        aiHost.saveApiKey(providerId, apiKey).then((catalog) => {
+          if (!disposed) emit({ kind: "account-connected", catalog });
+        }).catch((error) => {
+          if (!disposed) emit({
+            kind: "account-error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return () => {
+          disposed = true;
+        };
+      }),
       checkProviderStatus: op(async (input: any) => {
         const aiHost = await getHost();
         const providerId = await requireCatalogProvider(input.providerId);

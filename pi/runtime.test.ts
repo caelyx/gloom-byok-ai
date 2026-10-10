@@ -4,6 +4,7 @@ import {
   Type,
   createModels,
   createProvider,
+  envApiKeyAuth,
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
@@ -146,6 +147,59 @@ describe("PiAiRuntime", () => {
     });
     expect(JSON.stringify(connected)).not.toContain("login-code");
     expect((await runtime.logout("anthropic")).connection).toEqual({ state: "not_connected" });
+  });
+
+  test("stores a pasted API key in place of an OAuth sign-in without echoing it", async () => {
+    const credentials = new InMemoryCredentialStore();
+    await credentials.modify("anthropic", async () => ({
+      type: "oauth",
+      access: "subscription-access",
+      refresh: "subscription-refresh",
+      expires: Date.now() + 60_000,
+    }));
+    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-opus-4-8" }] });
+    const provider = createProvider({
+      id: "anthropic",
+      name: "Anthropic",
+      auth: {
+        apiKey: envApiKeyAuth("Anthropic API key", ["GLOOM_TEST_UNSET_ANTHROPIC_KEY"]),
+        oauth: {
+          name: "Claude Pro/Max",
+          login: async () => { throw new Error("unused"); },
+          refresh: async (credential) => credential,
+          toAuth: async (credential) => ({ apiKey: credential.access }),
+        },
+      },
+      models: faux.models,
+      api: { stream: faux.provider.stream, streamSimple: faux.provider.streamSimple },
+    });
+    const models = createModels({ credentials });
+    models.setProvider(provider);
+    const runtime = new PiAiRuntime({ models });
+
+    const connected = await runtime.saveApiKey("anthropic", "  sk-ant-api03-console-key \n");
+
+    expect(await credentials.read("anthropic")).toEqual({ type: "api_key", key: "sk-ant-api03-console-key" });
+    expect(connected.connection).toEqual({
+      state: "connected",
+      type: "api_key",
+      source: "stored credential",
+      origin: "stored",
+      disconnectable: true,
+    });
+    expect(JSON.stringify(connected)).not.toContain("sk-ant-api03");
+  });
+
+  test("refuses a blank API key and providers without API-key entry", async () => {
+    const { runtime } = createFauxRuntime();
+
+    await expect(runtime.saveApiKey("anthropic", "   ")).rejects.toMatchObject({
+      code: "login_failed",
+      message: "Enter an API key.",
+    });
+    await expect(runtime.saveApiKey("anthropic", "sk-test")).rejects.toMatchObject({
+      code: "login_failed",
+    });
   });
 
   test("does not report an expired OAuth credential as connected when refresh fails", async () => {

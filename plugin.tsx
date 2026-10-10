@@ -18,14 +18,20 @@ import {
 } from "./pane-settings";
 import {
   detectProviders,
+  getAiProviderDefinitions,
   resolveDefaultAiProviderId,
   type AiProvider,
+  type AiProviderId,
 } from "./providers";
 import {
   connectAiRuntimeProvider,
   disconnectAiRuntimeProvider,
+  ensureAiRunHost,
   getAiRuntimeCatalog,
+  getAiRuntimeCatalogSnapshot,
+  saveAiRuntimeApiKey,
   subscribeAiRuntimeCatalog,
+  type AiRuntimeAccount,
 } from "./runner";
 import {
   buildAiRunnerWizard,
@@ -92,8 +98,8 @@ function settingsProviders(providers: readonly AiProvider[]) {
         ? `${provider.name} is ready.`
         : accounts.get(provider.id)?.canLogin
           ? `${provider.name} can be connected here.`
-          : accounts.get(provider.id)?.authMethods.some((method) => method.type === "api_key")
-            ? `${provider.name} needs an API key supplied through its standard environment variable.`
+          : accounts.get(provider.id)?.canSetApiKey
+            ? `${provider.name} can be connected here with an API key.`
           : `${provider.name} is not currently available.`,
   }));
 }
@@ -109,76 +115,183 @@ function settingsModels(providerIds: ReadonlySet<string>) {
     }));
 }
 
+function signInSettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
+  const disconnectable = account.canDisconnect;
+  const oauthLabel = account.authMethods.find((method) => method.type === "oauth")?.label;
+  return {
+    providerId: account.providerId,
+    providerLabel: account.providerLabel,
+    // Next to an API-key row, say which account a browser sign-in uses.
+    description: account.connectionState === "not_connected" && account.canLogin && oauthLabel
+      ? `Browser sign-in: ${oauthLabel}.`
+      : account.connectionLabel,
+    actionLabel: disconnectable ? "Disconnect" : "Connect",
+    async action(context) {
+      context.close();
+      if (disconnectable) {
+        context.notify({
+          body: `Disconnecting ${account.providerLabel}…`,
+          type: "info",
+          duration: 5_000,
+        });
+        try {
+          const catalog = await disconnectAiRuntimeProvider(account.providerId);
+          const remainingAccount = catalog.accounts.find((candidate) => (
+            candidate.providerId === account.providerId
+          ));
+          context.notify({
+            body: remainingAccount?.connectionState === "connected"
+              ? `${account.providerLabel}'s Gloomberb account was removed. ${remainingAccount.connectionLabel} remains active.`
+              : `${account.providerLabel} is disconnected from Gloomberb.`,
+            type: "success",
+          });
+        } catch (error) {
+          context.notify({
+            body: error instanceof Error ? error.message : `${account.providerLabel} disconnection failed.`,
+            type: "error",
+            persistent: true,
+          });
+        }
+        return;
+      }
+      context.notify({
+        body: `Opening ${account.providerLabel} sign-in in your browser…`,
+        type: "info",
+        duration: 5_000,
+      });
+      try {
+        await connectAiRuntimeProvider(account.providerId, undefined, (event) => {
+          if (event.type !== "device_code") return;
+          context.notify({
+            title: `${account.providerLabel} device sign-in`,
+            body: `Enter code ${event.userCode} at ${event.verificationUri}. The sign-in page has been opened in your browser.`,
+            type: "info",
+            persistent: true,
+          });
+        });
+        context.notify({
+          body: `${account.providerLabel} is connected.`,
+          type: "success",
+        });
+      } catch (error) {
+        context.notify({
+          body: error instanceof Error ? error.message : `${account.providerLabel} sign-in failed.`,
+          type: "error",
+          persistent: true,
+        });
+      }
+    },
+  };
+}
+
 function accountSettingRows(providerIds: ReadonlySet<string>): AiAccountSettingRow[] {
   return getAiRuntimeCatalog().accounts
-    .filter((account) => (
-      providerIds.has(account.providerId)
-      && (account.canLogin || account.canDisconnect)
-    ))
-    .map((account) => {
-      const disconnectable = account.canDisconnect;
-      return {
-        providerId: account.providerId,
-        providerLabel: account.providerLabel,
-        description: account.connectionLabel,
-        actionLabel: disconnectable ? "Disconnect" : "Connect",
-        async action(context) {
-          context.close();
-          if (disconnectable) {
-            context.notify({
-              body: `Disconnecting ${account.providerLabel}…`,
-              type: "info",
-              duration: 5_000,
-            });
-            try {
-              const catalog = await disconnectAiRuntimeProvider(account.providerId);
-              const remainingAccount = catalog.accounts.find((candidate) => (
-                candidate.providerId === account.providerId
-              ));
-              context.notify({
-                body: remainingAccount?.connectionState === "connected"
-                  ? `${account.providerLabel}'s Gloomberb account was removed. ${remainingAccount.connectionLabel} remains active.`
-                  : `${account.providerLabel} is disconnected from Gloomberb.`,
-                type: "success",
-              });
-            } catch (error) {
-              context.notify({
-                body: error instanceof Error ? error.message : `${account.providerLabel} disconnection failed.`,
-                type: "error",
-                persistent: true,
-              });
-            }
-            return;
-          }
-          context.notify({
-            body: `Opening ${account.providerLabel} sign-in in your browser…`,
-            type: "info",
-            duration: 5_000,
-          });
-          try {
-            await connectAiRuntimeProvider(account.providerId, undefined, (event) => {
-              if (event.type !== "device_code") return;
-              context.notify({
-                title: `${account.providerLabel} device sign-in`,
-                body: `Enter code ${event.userCode} at ${event.verificationUri}. The sign-in page has been opened in your browser.`,
-                type: "info",
-                persistent: true,
-              });
-            });
-            context.notify({
-              body: `${account.providerLabel} is connected.`,
-              type: "success",
-            });
-          } catch (error) {
-            context.notify({
-              body: error instanceof Error ? error.message : `${account.providerLabel} sign-in failed.`,
-              type: "error",
-              persistent: true,
-            });
-          }
-        },
-      };
+    .filter((account) => providerIds.has(account.providerId))
+    .flatMap((account) => [
+      ...(account.canLogin || account.canDisconnect ? [signInSettingRow(account)] : []),
+      ...(account.canSetApiKey ? [apiKeySettingRow(account)] : []),
+    ]);
+}
+
+/**
+ * What each provider calls its key and where it is issued. Static because the
+ * commands are registered before the runtime catalog has loaded. ChatGPT is
+ * absent: Pi signs it in through the browser only.
+ */
+const API_KEY_COPY: Readonly<Partial<Record<AiProviderId, { noun: string; hint: string }>>> = {
+  anthropic: {
+    noun: "Claude API key",
+    hint: "Create one in the Claude Console. Usage is billed to that API account, not to a Claude subscription.",
+  },
+  openai: { noun: "OpenAI API key", hint: "Create one in the OpenAI Platform dashboard." },
+  google: { noun: "Gemini API key", hint: "Create one in Google AI Studio." },
+  "github-copilot": {
+    noun: "GitHub Copilot token",
+    hint: "Use a GitHub token with Copilot access, the one Pi reads from COPILOT_GITHUB_TOKEN.",
+  },
+  xai: { noun: "xAI API key", hint: "Create one in the xAI Console." },
+  openrouter: { noun: "OpenRouter API key", hint: "Create one on OpenRouter's Keys page." },
+};
+
+function apiKeyCopy(account: AiRuntimeAccount): { noun: string; hint: string } {
+  return API_KEY_COPY[account.providerId] ?? {
+    noun: `${account.providerLabel} API key`,
+    hint: `Paste an API key for ${account.providerLabel}.`,
+  };
+}
+
+function apiKeyCommandLabel(noun: string): string {
+  return `Set ${noun}`;
+}
+
+function hasSavedApiKey(account: AiRuntimeAccount): boolean {
+  return account.connectionState === "connected"
+    && account.credentialType === "api_key"
+    && account.credentialOrigin === "stored";
+}
+
+function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
+  const saved = hasSavedApiKey(account);
+  const copy = apiKeyCopy(account);
+  return {
+    providerId: account.providerId,
+    providerLabel: account.providerLabel,
+    variant: "api-key",
+    label: copy.noun,
+    description: saved
+      ? account.connectionLabel
+      : account.connectionState === "connected"
+        // A saved key wins over a sign-in or an environment variable.
+        ? `Takes precedence over the current connection (${account.connectionLabel}).`
+        : copy.hint,
+    actionLabel: saved ? "Replace key" : "Enter key",
+    action(context) {
+      // Pane settings have no masked field, so the key goes into the command
+      // bar's password step instead. The query lands on that command.
+      context.close();
+      context.openCommandBar(apiKeyCommandLabel(copy.noun));
+    },
+  };
+}
+
+/**
+ * One masked-entry command per provider, reachable from its settings row or
+ * typed into the command bar, and hidden where Pi takes no key.
+ */
+function registerApiKeyCommands(ctx: GloomPluginContext): void {
+  for (const definition of getAiProviderDefinitions()) {
+    const copy = API_KEY_COPY[definition.id];
+    if (!copy) continue;
+    ctx.registerCommand({
+      id: `ai-api-key:${definition.id}`,
+      label: apiKeyCommandLabel(copy.noun),
+      keywords: ["ai", "api key", "key", "token", "connect", definition.id, definition.name.toLowerCase()],
+      category: "config",
+      description: `Connect ${definition.name} with an API key instead of a browser sign-in.`,
+      hidden: () => !getAiRuntimeCatalogSnapshot().accounts.some((account) => (
+        account.providerId === definition.id && account.canSetApiKey
+      )),
+      wizard: [{
+        key: "apiKey",
+        label: copy.noun,
+        type: "password",
+        placeholder: "Paste the key",
+        // The command bar shows only the first body line of an input step.
+        body: [`${copy.hint} Saved in Gloomberb's data directory, replacing any credential saved there for this provider.`],
+      }],
+      async execute(values) {
+        await ensureAiRunHost();
+        // Errors surface in the wizard; Pi's messages never contain the key.
+        await saveAiRuntimeApiKey(definition.id, values?.apiKey ?? "");
+        // Pi stores the key without calling the provider, so a typo only
+        // shows up when a request is made.
+        ctx.notify({
+          body: `${copy.noun} saved. It is checked on the first request.`,
+          type: "success",
+        });
+      },
     });
+  }
 }
 
 function defaultsFromConfig(
@@ -288,6 +401,8 @@ export function createByokAiPlugin({ setupRunHost, cliCommands }: ByokAiPluginOp
       ctx.on("config:changed", ({ config }) => updateWizards(config));
       disposeRuntimeCatalog?.();
       disposeRuntimeCatalog = subscribeAiRuntimeCatalog(() => updateWizards(ctx.getConfig()));
+
+      registerApiKeyCommands(ctx);
 
       ctx.registerTickerResearchTab({
         id: "ai-chat",

@@ -158,7 +158,7 @@ describe("LocalAgentWorkspacePane provider setup", () => {
     });
     const providerPickerFrame = testSetup.captureCharFrame();
     expect(providerPickerFrame).toContain("Choose AI provider");
-    expect(providerPickerFrame).toContain("Claude · sign in");
+    expect(providerPickerFrame).toContain("Claude · connect");
 
     await act(async () => {
       testSetup?.renderer.destroy();

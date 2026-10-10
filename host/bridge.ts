@@ -33,6 +33,15 @@ function connectProvider(
   authType?: AiRuntimeAuthType,
   onAuthEvent?: (event: AiAuthProgressEvent) => void,
 ): Promise<AiRuntimeCatalog> {
+  return accountStream("connectProvider", { providerId, authType }, onAuthEvent);
+}
+
+/** An account operation streamed from the Bun process until it settles. */
+function accountStream(
+  operationId: string,
+  payload: unknown,
+  onAuthEvent?: (event: AiAuthProgressEvent) => void,
+): Promise<AiRuntimeCatalog> {
   return new Promise<AiRuntimeCatalog>((resolve, reject) => {
     let settled = false;
     let unsubscribe: () => void = () => {};
@@ -45,8 +54,8 @@ function connectProvider(
     try {
       unsubscribe = requireStreamClient().subscribe({
         capabilityId: AI_RUNNER_CAPABILITY_ID,
-        operationId: "connectProvider",
-        payload: { providerId, authType },
+        operationId,
+        payload,
         onEvent: (value) => {
           const event = value as AiRunnerEvent;
           if (event.kind === "account-connected") {
@@ -80,6 +89,9 @@ export function createBridgeAiRunHost(): AiRunHost {
     },
     disconnect(providerId) {
       return invoke("disconnectProvider", { providerId });
+    },
+    saveApiKey(providerId, apiKey) {
+      return accountStream("saveProviderApiKey", { providerId, apiKey });
     },
     checkStatus(providerId) {
       return invoke("checkProviderStatus", { providerId });

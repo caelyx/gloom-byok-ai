@@ -180,7 +180,7 @@ export function getAiProviderUnavailableReason(provider: AiProvider): string {
 }
 
 export function getAiProviderUnavailableLabel(provider: AiProvider): string {
-  return provider.status === "check_failed" ? "unavailable" : "sign in";
+  return provider.status === "check_failed" ? "unavailable" : "connect";
 }
 
 export function setDetectedProviders(providers: AiProvider[] | null): void {

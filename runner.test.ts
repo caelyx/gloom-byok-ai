@@ -6,6 +6,7 @@ import {
   getAiRuntimeCatalogSnapshot,
   installAiRunHost,
   runAiPrompt,
+  saveAiRuntimeApiKey,
   setAiRunHost,
   setAiRuntimeCatalog,
   subscribeAiRuntimeCatalog,
@@ -34,6 +35,7 @@ function catalog(connectionState: "connected" | "not_connected"): AiRuntimeCatal
         : {}),
       authMethods: [{ type: "oauth", label: "ChatGPT Plus/Pro", canLogin: true }],
       canLogin: true,
+      canSetApiKey: false,
       canDisconnect: connected,
       loginType: "oauth",
     }],
@@ -113,6 +115,26 @@ describe("AI runtime catalog", () => {
     ]);
     expect(getAiRuntimeCatalogSnapshot().accounts[0]?.authMethods[0]?.label)
       .toBe("ChatGPT Plus/Pro");
+  });
+});
+
+describe("AI runtime API-key saving", () => {
+  test("publishes the host's catalog and refuses a blank key or a missing host", async () => {
+    setAiRunHost(null);
+    await expect(saveAiRuntimeApiKey("openai-codex", "sk-test")).rejects.toThrow("unavailable in this renderer");
+
+    const saved: string[] = [];
+    setAiRunHost({
+      run: () => ({ done: Promise.resolve(""), cancel() {} }),
+      saveApiKey: async (providerId) => {
+        saved.push(providerId);
+        return catalog("connected");
+      },
+    });
+    await expect(saveAiRuntimeApiKey("openai-codex", "  ")).rejects.toThrow("Enter an API key.");
+    expect(await saveAiRuntimeApiKey("codex", "sk-test")).toEqual(catalog("connected"));
+    expect(saved).toEqual(["openai-codex"]);
+    expect(getAiRuntimeCatalogSnapshot().accounts[0]?.connectionState).toBe("connected");
   });
 });
 

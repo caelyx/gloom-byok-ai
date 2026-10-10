@@ -72,6 +72,9 @@ type RemoteRequestSender = (
 
 function connectionLabel(provider: PiProviderSummary): string {
   if (provider.connection.state === "connected") {
+    if (provider.connection.type === "api_key" && provider.connection.origin === "stored") {
+      return "Connected with an API key saved in Gloomberb";
+    }
     return provider.connection.source
       ? `Connected with ${provider.connection.source}`
       : "Connected in Gloomberb";
@@ -110,6 +113,7 @@ export function toAiRuntimeCatalog(catalog: PiCatalog): AiRuntimeCatalog {
     accounts: catalog.providers
       .map((provider) => {
         const loginMethod = provider.authMethods.find((method) => method.type === "oauth" && method.canLogin);
+        const apiKeyMethod = provider.authMethods.find((method) => method.type === "api_key" && method.canLogin);
         return {
           providerId: provider.id,
           providerLabel: provider.label,
@@ -119,15 +123,12 @@ export function toAiRuntimeCatalog(catalog: PiCatalog): AiRuntimeCatalog {
             ? {
                 credentialSource: provider.connection.source,
                 credentialOrigin: provider.connection.origin,
+                credentialType: provider.connection.type,
               }
             : {}),
-          authMethods: provider.authMethods.map((method) => ({
-            ...method,
-            // Secret entry needs a masked renderer interaction. Until that
-            // exists, API keys are resolved from Pi's store or environment.
-            canLogin: method.type === "oauth" && method.canLogin,
-          })),
+          authMethods: provider.authMethods.map((method) => ({ ...method })),
           canLogin: loginMethod !== undefined,
+          canSetApiKey: apiKeyMethod !== undefined,
           canDisconnect: canDisconnectProvider(provider),
           loginType: loginMethod?.type,
         };
@@ -207,7 +208,7 @@ function answerLoginPrompt(
     // explicit text-input interaction instead of an invisible default.
     return Promise.resolve("");
   }
-  return Promise.reject(new Error(`${prompt.message} This credential type cannot yet be entered from pane settings.`));
+  return Promise.reject(new Error(`${prompt.message} This credential type cannot yet be entered in Gloomberb.`));
 }
 
 function safeRemoteResponse(value: unknown): string {
@@ -399,6 +400,10 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
   const openExternal = options.openExternal ?? defaultOpenExternal;
   const sendRemoteRequest = options.sendRemoteRequest ?? sendRemoteControlRequest;
   const pendingConnections = new Map<string, Promise<AiRuntimeCatalog>>();
+  // An agent reply holds the remote-control tool, which can open the API-key
+  // command and type into it like a user. Saving is refused until it ends, so
+  // a prompt injection cannot point the user's account at a key it controls.
+  let activeAgentRuns = 0;
 
   const getCatalog = async () => toAiRuntimeCatalog(await runtime.getCatalog());
 
@@ -416,7 +421,7 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
         ));
         if (!loginMethod || loginMethod.type !== "oauth") {
           throw new Error(
-            `${summary.label} does not offer an in-app browser sign-in flow. Configure its API key in the environment or Pi credential store.`,
+            `${summary.label} does not offer an in-app browser sign-in flow. Enter an API key in AI pane settings instead.`,
           );
         }
         let browserLaunch: Promise<void> | null = null;
@@ -459,6 +464,17 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
       pendingConnections.set(pendingKey, connection);
       return connection;
     },
+    async saveApiKey(providerId, apiKey) {
+      if (activeAgentRuns > 0) {
+        throw new Error("Wait for the AI Agent reply to finish or cancel it, then enter the key.");
+      }
+      // A sign-in finishing later would overwrite the key that was just saved.
+      if ([...pendingConnections.keys()].some((key) => key.startsWith(`${providerId}:`))) {
+        throw new Error("A browser sign-in is still in progress for this provider. Finish it or let it time out, then enter the key.");
+      }
+      await runtime.saveApiKey(providerId, apiKey);
+      return getCatalog();
+    },
     async disconnect(providerId) {
       const summary = await runtime.getProviderSummary(providerId);
       if (summary.connection.state === "connected" && !canDisconnectProvider(summary)) {
@@ -480,86 +496,103 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
       };
     },
     run(runOptions) {
-      return wrapDeferredRun(async () => {
-        const summary = await runtime.getProviderSummary(runOptions.providerId);
-        if (summary.connection.state !== "connected") {
-          throw new Error(`${summary.label} is not connected. Connect it in AI pane settings before running.`);
-        }
+      if (runOptions.outputMode === "structured") {
+        // Counted from the call, not from when the model starts, so there is
+        // no gap in which the agent's tool could already be reachable.
+        activeAgentRuns += 1;
+        const controller = runDeferred(runOptions);
+        return {
+          // Released before the caller sees the reply settle.
+          done: controller.done.finally(() => {
+            activeAgentRuns -= 1;
+          }),
+          cancel: controller.cancel,
+        };
+      }
+      return runDeferred(runOptions);
+    },
+  };
 
-        if (runOptions.outputMode === "screener") {
-          let submitted: ScreenerResultsPayload | null = null;
-          const run = runtime.runAgent({
-            providerId: runOptions.providerId,
-            modelId: runOptions.modelId,
-            prompt: runOptions.prompt,
-            messages: runOptions.messages,
-            agentMessages: runOptions.agentMessages,
-            systemPrompt: SCREENER_AGENT_SYSTEM_PROMPT,
-            tools: [
-              createScreenerMarketDataTool({
-                appKind: options.appKind,
-                dataDir: options.dataDir,
-                sendRequest: sendRemoteRequest,
-              }),
-              createScreenerSubmissionTool((payload) => { submitted = payload; }),
-            ],
-          });
-          return {
-            done: run.done.then(() => {
-              if (!submitted) throw new Error("AI screener finished without submitting structured results.");
-              const output = JSON.stringify(submitted);
-              runOptions.onChunk?.(output);
-              return output;
-            }).catch((error) => {
-              if (isPiRunCancelled(error)) throw new AiRunCancelledError();
-              throw error;
-            }),
-            cancel: run.cancel,
-          };
-        }
+  function runDeferred(runOptions: Parameters<AiRunHost["run"]>[0]): AiRunController {
+    return wrapDeferredRun(async () => {
+      const summary = await runtime.getProviderSummary(runOptions.providerId);
+      if (summary.connection.state !== "connected") {
+        throw new Error(`${summary.label} is not connected. Connect it in AI pane settings before running.`);
+      }
 
-        if (runOptions.outputMode === "structured") {
-          const run = runtime.runAgent({
-            providerId: runOptions.providerId,
-            modelId: runOptions.modelId,
-            prompt: runOptions.prompt,
-            messages: runOptions.messages,
-            agentMessages: runOptions.agentMessages,
-            systemPrompt: NATIVE_AGENT_SYSTEM_PROMPT,
-            tools: [createRemoteTool({
-              appKind: options.appKind,
-              dataDir: options.dataDir,
-              sendRequest: sendRemoteRequest,
-            })],
-            onChunk: runOptions.onChunk,
-          });
-          return {
-            done: run.done.then((result) => {
-              runOptions.onAgentMessages?.(normalizeAiAgentHistory(result.messages));
-              return result.text;
-            }).catch((error) => {
-              if (isPiRunCancelled(error)) throw new AiRunCancelledError();
-              throw error;
-            }),
-            cancel: run.cancel,
-          };
-        }
-
-        const run = runtime.runText({
+      if (runOptions.outputMode === "screener") {
+        let submitted: ScreenerResultsPayload | null = null;
+        const run = runtime.runAgent({
           providerId: runOptions.providerId,
           modelId: runOptions.modelId,
           prompt: runOptions.prompt,
           messages: runOptions.messages,
-          onChunk: runOptions.onChunk,
+          agentMessages: runOptions.agentMessages,
+          systemPrompt: SCREENER_AGENT_SYSTEM_PROMPT,
+          tools: [
+            createScreenerMarketDataTool({
+              appKind: options.appKind,
+              dataDir: options.dataDir,
+              sendRequest: sendRemoteRequest,
+            }),
+            createScreenerSubmissionTool((payload) => { submitted = payload; }),
+          ],
         });
         return {
-          done: run.done.catch((error) => {
+          done: run.done.then(() => {
+            if (!submitted) throw new Error("AI screener finished without submitting structured results.");
+            const output = JSON.stringify(submitted);
+            runOptions.onChunk?.(output);
+            return output;
+          }).catch((error) => {
             if (isPiRunCancelled(error)) throw new AiRunCancelledError();
             throw error;
           }),
           cancel: run.cancel,
         };
+      }
+
+      if (runOptions.outputMode === "structured") {
+        const run = runtime.runAgent({
+          providerId: runOptions.providerId,
+          modelId: runOptions.modelId,
+          prompt: runOptions.prompt,
+          messages: runOptions.messages,
+          agentMessages: runOptions.agentMessages,
+          systemPrompt: NATIVE_AGENT_SYSTEM_PROMPT,
+          tools: [createRemoteTool({
+            appKind: options.appKind,
+            dataDir: options.dataDir,
+            sendRequest: sendRemoteRequest,
+          })],
+          onChunk: runOptions.onChunk,
+        });
+        return {
+          done: run.done.then((result) => {
+            runOptions.onAgentMessages?.(normalizeAiAgentHistory(result.messages));
+            return result.text;
+          }).catch((error) => {
+            if (isPiRunCancelled(error)) throw new AiRunCancelledError();
+            throw error;
+          }),
+          cancel: run.cancel,
+        };
+      }
+
+      const run = runtime.runText({
+        providerId: runOptions.providerId,
+        modelId: runOptions.modelId,
+        prompt: runOptions.prompt,
+        messages: runOptions.messages,
+        onChunk: runOptions.onChunk,
       });
-    },
-  };
+      return {
+        done: run.done.catch((error) => {
+          if (isPiRunCancelled(error)) throw new AiRunCancelledError();
+          throw error;
+        }),
+        cancel: run.cancel,
+      };
+    });
+  }
 }

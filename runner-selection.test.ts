@@ -78,7 +78,7 @@ describe("AI runner selection", () => {
       runtimeCatalog: catalog(providers),
     }).map(({ id }) => id)).toEqual(["anthropic", "openai-codex"]);
     expect(wizard[0]?.type === "select" ? wizard[0].options?.map((option) => option.label) : [])
-      .toEqual(["ANTHROPIC (sign in)", "OPENAI-CODEX (unavailable)"]);
+      .toEqual(["ANTHROPIC (connect)", "OPENAI-CODEX (unavailable)"]);
     expect(wizard[0]?.defaultValue).toBe("anthropic");
   });
 
