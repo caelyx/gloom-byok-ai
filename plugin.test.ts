@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createDefaultConfig } from "gloomberb/types/config";
-import type { PaneDef, PaneTemplateDef } from "gloomberb/types/plugin";
+import type { CommandDef, PaneDef, PaneTemplateDef } from "gloomberb/types/plugin";
 import { createByokAiPlugin } from "./plugin";
 import {
   AI_PROVIDER_IDS,
@@ -77,6 +77,8 @@ function setupPlugin(config = createDefaultConfig("/tmp/gloomberb-ai-plugin")) {
   const aiPlugin = createByokAiPlugin({ setupRunHost: () => hostSetups.push(1) });
   const panes: PaneDef[] = [];
   const templates: PaneTemplateDef[] = [];
+  const commands: CommandDef[] = [];
+  const notifications: Array<{ body: string; type?: string }> = [];
   const setCalls: Array<[string, unknown]> = [];
   const listeners: {
     configChanged?: (payload: { config: typeof config }) => void;
@@ -104,6 +106,10 @@ function setupPlugin(config = createDefaultConfig("/tmp/gloomberb-ai-plugin")) {
     registerPane: (pane: PaneDef) => panes.push(pane),
     registerPaneTemplate: (template: PaneTemplateDef) => templates.push(template),
     registerTickerResearchTab() {},
+    registerCommand: (command: CommandDef) => commands.push(command),
+    notify: (notification: { body: string; type?: string }) => {
+      notifications.push(notification);
+    },
     on: (event: string, listener: (payload: { config: typeof config }) => void) => {
       if (event === "config:changed") listeners.configChanged = listener;
       return () => {};
@@ -111,13 +117,105 @@ function setupPlugin(config = createDefaultConfig("/tmp/gloomberb-ai-plugin")) {
     log: { warn() {} },
   } as any);
 
-  return { config, hostSetups, listeners, panes, setCalls, templates };
+  return { commands, config, hostSetups, listeners, notifications, panes, setCalls, templates };
 }
 
 afterEach(() => {
   setDetectedProviders(null);
   setAiRunHost(null);
   setAiRuntimeCatalog({ providers: [], accounts: [], models: [] });
+});
+
+function workspaceSettings(setup: ReturnType<typeof setupPlugin>) {
+  const workspacePane = setup.panes.find((pane) => pane.id === "local-agent-workspace");
+  const settingsContext = {
+    config: setup.config,
+    layout: setup.config.layout,
+    paneId: "agent-pane",
+    paneType: "local-agent-workspace",
+    pane: { instanceId: "agent-pane", paneId: "local-agent-workspace", title: "AI Agent" },
+    settings: {},
+    paneState: {},
+    activeTicker: null,
+    activeCollectionId: null,
+  };
+  const settings = typeof workspacePane?.settings === "function"
+    ? workspacePane.settings(settingsContext)
+    : null;
+  return { settings, settingsContext };
+}
+
+describe("AI plugin API-key entry", () => {
+  test("offers API-key entry for Gemini, which has no browser sign-in", async () => {
+    setAiRuntimeCatalog(catalog([]));
+    const setup = setupPlugin();
+    const { settings, settingsContext } = workspaceSettings(setup);
+
+    expect(settings?.fields.find((field) => field.key === "account:google")).toBeUndefined();
+    const keyField = settings?.fields.find((field) => field.key === "account:google:api-key");
+    if (keyField?.type !== "action") throw new Error("Expected a Gemini API-key action");
+    expect(keyField).toMatchObject({ label: "Google Gemini API key", actionLabel: "Enter key" });
+
+    const opened: Array<string | undefined> = [];
+    let closed = false;
+    await keyField.action({
+      ...settingsContext,
+      surface: "pane-dialog",
+      close() { closed = true; },
+      openCommandBar: (query?: string) => opened.push(query),
+      notify() {},
+    } as any);
+
+    expect(closed).toBe(true);
+    expect(opened).toEqual(["Set Google Gemini API key"]);
+  });
+
+  test("offers Claude an API key alongside the subscription sign-in", () => {
+    setAiRuntimeCatalog(catalog([]));
+    const { settings } = workspaceSettings(setupPlugin());
+
+    expect(settings?.fields.find((field) => field.key === "account:anthropic"))
+      .toMatchObject({ type: "action", actionLabel: "Connect", description: "Browser sign-in: Sign in." });
+    expect(settings?.fields.find((field) => field.key === "account:anthropic:api-key"))
+      .toMatchObject({ type: "action", label: "Claude API key", actionLabel: "Enter key" });
+    expect(settings?.fields.find((field) => field.key === "account:openai-codex:api-key"))
+      .toBeUndefined();
+  });
+
+  test("saves the key from a masked command-bar step and reports only status", async () => {
+    setAiRuntimeCatalog(catalog([]));
+    const saved: Array<[string, string]> = [];
+    setAiRunHost({
+      run: () => ({ done: Promise.resolve("unused"), cancel() {} }),
+      saveApiKey: async (providerId, apiKey) => {
+        saved.push([providerId, apiKey]);
+        return catalog([providerId]);
+      },
+    });
+    const setup = setupPlugin();
+    const command = setup.commands.find((candidate) => candidate.id === "ai-api-key:google");
+    if (!command) throw new Error("Expected a Gemini API-key command");
+
+    expect(command.label).toBe("Set Google Gemini API key");
+    expect(command.hidden?.()).toBe(false);
+    expect(command.wizard).toEqual([expect.objectContaining({
+      key: "apiKey",
+      type: "password",
+    })]);
+    expect(setup.commands.find((candidate) => candidate.id === "ai-api-key:openai-codex")?.hidden?.())
+      .toBe(true);
+
+    await command.execute({ apiKey: "AIza-secret" });
+
+    expect(saved).toEqual([["google", "AIza-secret"]]);
+    expect(getAiRuntimeCatalog().accounts.find((account) => account.providerId === "google"))
+      .toMatchObject({ connectionState: "connected" });
+    expect(setup.notifications.at(-1)).toEqual({
+      body: "Google Gemini is connected with your API key.",
+      type: "success",
+    });
+    expect(JSON.stringify(setup.notifications)).not.toContain("AIza-secret");
+  });
 });
 
 describe("AI plugin shared provider settings", () => {

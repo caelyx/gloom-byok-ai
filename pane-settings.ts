@@ -43,6 +43,10 @@ export interface AiSettingsProvider {
 export interface AiAccountSettingRow {
   providerId: string;
   providerLabel: string;
+  /** Distinguishes a second row for the same provider, such as API-key entry. */
+  variant?: string;
+  /** Defaults to "<provider> account". */
+  label?: string;
   description: string;
   actionLabel: string;
   disabled?: boolean;
@@ -274,12 +278,13 @@ export function buildAiPaneSettingsDef(options: BuildAiPaneSettingsOptions): Pan
   }
 
   for (const account of options.accountRows ?? []) {
+    const id = account.variant ? `${account.providerId}:${account.variant}` : account.providerId;
     fields.push({
-      key: `account:${account.providerId}`,
-      label: `${account.providerLabel} account`,
+      key: `account:${id}`,
+      label: account.label ?? `${account.providerLabel} account`,
       description: account.description,
       type: "action",
-      actionId: `ai:account:${account.providerId}`,
+      actionId: `ai:account:${id}`,
       actionLabel: account.actionLabel,
       disabled: account.disabled,
       action: account.action,

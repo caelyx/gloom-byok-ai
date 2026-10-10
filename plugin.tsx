@@ -18,14 +18,20 @@ import {
 } from "./pane-settings";
 import {
   detectProviders,
+  getAiProviderDefinitions,
   resolveDefaultAiProviderId,
   type AiProvider,
+  type AiProviderId,
 } from "./providers";
 import {
   connectAiRuntimeProvider,
   disconnectAiRuntimeProvider,
+  ensureAiRunHost,
   getAiRuntimeCatalog,
+  getAiRuntimeCatalogSnapshot,
+  saveAiRuntimeApiKey,
   subscribeAiRuntimeCatalog,
+  type AiRuntimeAccount,
 } from "./runner";
 import {
   buildAiRunnerWizard,
@@ -92,8 +98,8 @@ function settingsProviders(providers: readonly AiProvider[]) {
         ? `${provider.name} is ready.`
         : accounts.get(provider.id)?.canLogin
           ? `${provider.name} can be connected here.`
-          : accounts.get(provider.id)?.authMethods.some((method) => method.type === "api_key")
-            ? `${provider.name} needs an API key supplied through its standard environment variable.`
+          : accounts.get(provider.id)?.canSetApiKey
+            ? `${provider.name} can be connected here with an API key.`
           : `${provider.name} is not currently available.`,
   }));
 }
@@ -109,76 +115,116 @@ function settingsModels(providerIds: ReadonlySet<string>) {
     }));
 }
 
+/** Where each provider issues the key, where that is worth saying. */
+const API_KEY_HINTS: Partial<Record<AiProviderId, string>> = {
+  anthropic: "Create one in the Claude Console. Usage is billed to that API account, not to a Claude subscription.",
+  google: "Create one in Google AI Studio.",
+};
+
+function apiKeyCommandId(providerId: string): string {
+  return `ai-api-key:${providerId}`;
+}
+
+function apiKeyCommandLabel(providerLabel: string): string {
+  return `Set ${providerLabel} API key`;
+}
+
+function apiKeySettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
+  const connected = account.connectionState === "connected";
+  return {
+    providerId: account.providerId,
+    providerLabel: account.providerLabel,
+    variant: "api-key",
+    label: `${account.providerLabel} API key`,
+    description: connected
+      ? `Replaces the current connection (${account.connectionLabel}).`
+      : API_KEY_HINTS[account.providerId] ?? `Paste an API key for ${account.providerLabel}.`,
+    actionLabel: connected ? "Replace key" : "Enter key",
+    action(context) {
+      // Pane settings have no masked field, so the key goes into the command
+      // bar's password step instead. The query lands on that command.
+      context.close();
+      context.openCommandBar(apiKeyCommandLabel(account.providerLabel));
+    },
+  };
+}
+
 function accountSettingRows(providerIds: ReadonlySet<string>): AiAccountSettingRow[] {
   return getAiRuntimeCatalog().accounts
-    .filter((account) => (
-      providerIds.has(account.providerId)
-      && (account.canLogin || account.canDisconnect)
-    ))
-    .map((account) => {
-      const disconnectable = account.canDisconnect;
-      return {
-        providerId: account.providerId,
-        providerLabel: account.providerLabel,
-        description: account.connectionLabel,
-        actionLabel: disconnectable ? "Disconnect" : "Connect",
-        async action(context) {
-          context.close();
-          if (disconnectable) {
-            context.notify({
-              body: `Disconnecting ${account.providerLabel}…`,
-              type: "info",
-              duration: 5_000,
-            });
-            try {
-              const catalog = await disconnectAiRuntimeProvider(account.providerId);
-              const remainingAccount = catalog.accounts.find((candidate) => (
-                candidate.providerId === account.providerId
-              ));
-              context.notify({
-                body: remainingAccount?.connectionState === "connected"
-                  ? `${account.providerLabel}'s Gloomberb account was removed. ${remainingAccount.connectionLabel} remains active.`
-                  : `${account.providerLabel} is disconnected from Gloomberb.`,
-                type: "success",
-              });
-            } catch (error) {
-              context.notify({
-                body: error instanceof Error ? error.message : `${account.providerLabel} disconnection failed.`,
-                type: "error",
-                persistent: true,
-              });
-            }
-            return;
-          }
+    .filter((account) => providerIds.has(account.providerId))
+    .flatMap((account) => [
+      ...(account.canLogin || account.canDisconnect ? [signInSettingRow(account)] : []),
+      ...(account.canSetApiKey ? [apiKeySettingRow(account)] : []),
+    ]);
+}
+
+function signInSettingRow(account: AiRuntimeAccount): AiAccountSettingRow {
+  const disconnectable = account.canDisconnect;
+  const oauthLabel = account.authMethods.find((method) => method.type === "oauth")?.label;
+  return {
+    providerId: account.providerId,
+    providerLabel: account.providerLabel,
+    // Next to an API-key row, say which account a browser sign-in uses.
+    description: !disconnectable && account.canLogin && oauthLabel
+      ? `Browser sign-in: ${oauthLabel}.`
+      : account.connectionLabel,
+    actionLabel: disconnectable ? "Disconnect" : "Connect",
+    async action(context) {
+      context.close();
+      if (disconnectable) {
+        context.notify({
+          body: `Disconnecting ${account.providerLabel}…`,
+          type: "info",
+          duration: 5_000,
+        });
+        try {
+          const catalog = await disconnectAiRuntimeProvider(account.providerId);
+          const remainingAccount = catalog.accounts.find((candidate) => (
+            candidate.providerId === account.providerId
+          ));
           context.notify({
-            body: `Opening ${account.providerLabel} sign-in in your browser…`,
-            type: "info",
-            duration: 5_000,
+            body: remainingAccount?.connectionState === "connected"
+              ? `${account.providerLabel}'s Gloomberb account was removed. ${remainingAccount.connectionLabel} remains active.`
+              : `${account.providerLabel} is disconnected from Gloomberb.`,
+            type: "success",
           });
-          try {
-            await connectAiRuntimeProvider(account.providerId, undefined, (event) => {
-              if (event.type !== "device_code") return;
-              context.notify({
-                title: `${account.providerLabel} device sign-in`,
-                body: `Enter code ${event.userCode} at ${event.verificationUri}. The sign-in page has been opened in your browser.`,
-                type: "info",
-                persistent: true,
-              });
-            });
-            context.notify({
-              body: `${account.providerLabel} is connected.`,
-              type: "success",
-            });
-          } catch (error) {
-            context.notify({
-              body: error instanceof Error ? error.message : `${account.providerLabel} sign-in failed.`,
-              type: "error",
-              persistent: true,
-            });
-          }
-        },
-      };
-    });
+        } catch (error) {
+          context.notify({
+            body: error instanceof Error ? error.message : `${account.providerLabel} disconnection failed.`,
+            type: "error",
+            persistent: true,
+          });
+        }
+        return;
+      }
+      context.notify({
+        body: `Opening ${account.providerLabel} sign-in in your browser…`,
+        type: "info",
+        duration: 5_000,
+      });
+      try {
+        await connectAiRuntimeProvider(account.providerId, undefined, (event) => {
+          if (event.type !== "device_code") return;
+          context.notify({
+            title: `${account.providerLabel} device sign-in`,
+            body: `Enter code ${event.userCode} at ${event.verificationUri}. The sign-in page has been opened in your browser.`,
+            type: "info",
+            persistent: true,
+          });
+        });
+        context.notify({
+          body: `${account.providerLabel} is connected.`,
+          type: "success",
+        });
+      } catch (error) {
+        context.notify({
+          body: error instanceof Error ? error.message : `${account.providerLabel} sign-in failed.`,
+          type: "error",
+          persistent: true,
+        });
+      }
+    },
+  };
 }
 
 function defaultsFromConfig(
@@ -288,6 +334,39 @@ export function createByokAiPlugin({ setupRunHost, cliCommands }: ByokAiPluginOp
       ctx.on("config:changed", ({ config }) => updateWizards(config));
       disposeRuntimeCatalog?.();
       disposeRuntimeCatalog = subscribeAiRuntimeCatalog(() => updateWizards(ctx.getConfig()));
+
+      for (const definition of getAiProviderDefinitions()) {
+        const account = () => getAiRuntimeCatalogSnapshot().accounts.find((candidate) => (
+          candidate.providerId === definition.id
+        ));
+        ctx.registerCommand({
+          id: apiKeyCommandId(definition.id),
+          label: apiKeyCommandLabel(definition.name),
+          keywords: ["ai", "api key", "key", "connect", definition.id, definition.name.toLowerCase()],
+          category: "config",
+          description: `Connect ${definition.name} with an API key instead of a browser sign-in.`,
+          hidden: () => !account()?.canSetApiKey,
+          wizard: [{
+            key: "apiKey",
+            label: `${definition.name} API key`,
+            type: "password",
+            placeholder: "Paste the key",
+            body: [
+              API_KEY_HINTS[definition.id] ?? `Paste an API key for ${definition.name}.`,
+              "It is stored in Gloomberb's data directory and replaces any existing sign-in for this provider.",
+            ],
+          }],
+          async execute(values) {
+            await ensureAiRunHost();
+            // Errors surface in the wizard; Pi's messages never contain the key.
+            await saveAiRuntimeApiKey(definition.id, values?.apiKey ?? "");
+            ctx.notify({
+              body: `${definition.name} is connected with your API key.`,
+              type: "success",
+            });
+          },
+        });
+      }
 
       ctx.registerTickerResearchTab({
         id: "ai-chat",
